@@ -51,6 +51,23 @@ class TestClassify(unittest.TestCase):
         out = classify([_field("片商", "甲"), _field("片商", "乙")])
         self.assertEqual(out["maker"], "甲")
 
+    def test_tag_label_plain_text_is_genres(self):
+        # 部分站点没有「类型」，只有「标签/標籤」纯文本 → 归为类型
+        out = classify([_field("标签", "剧情 / 恋爱")])
+        self.assertEqual(out["genres"], ["剧情", "恋爱"])
+        self.assertEqual(out["label"], "")
+
+    def test_traditional_tag_label_plain_text_is_genres(self):
+        out = classify([_field("標籤", "巨乳, 単体")])
+        self.assertEqual(out["genres"], ["巨乳", "単体"])
+        self.assertEqual(out["label"], "")
+
+    def test_tag_label_with_label_link_is_label(self):
+        # 「标签」但链接指向 /cn/labels/ → 仍是厂牌，不误判为类型
+        out = classify([_field("标签", "", links=[{"text": "某厂牌", "href": "https://x.com/cn/labels/1"}])])
+        self.assertEqual(out["label"], "某厂牌")
+        self.assertEqual(out["genres"], [])
+
 
 class TestLinkValues(unittest.TestCase):
     def test_real_structure_link_values(self):

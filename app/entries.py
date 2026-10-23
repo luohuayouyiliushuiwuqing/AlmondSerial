@@ -5,9 +5,9 @@
 
 import json
 import sqlite3
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit, urlparse
 
-from . import db, detail_proxy
+from . import db, detail_proxy, imgcache
 from .attributes import classify, field_links
 from .codes import extract_code, normalize_code
 
@@ -33,10 +33,23 @@ def _links_for(conn: sqlite3.Connection, code: str) -> list[str]:
     return [r["url"] for r in rows]
 
 
+def _cover_state(cover: str) -> int:
+    """封面（图像）抓取状态：0 无链接 / 1 有链接未抓图 / 2 已抓图 / 3 抓图失败。"""
+    if not cover:
+        return 0
+    if imgcache.has(cover):
+        return 2
+    if imgcache.is_failed(cover):
+        return 3
+    return 1
+
+
 def _row_to_entry(row: sqlite3.Row, links: list[str], tags: list[dict]) -> dict:
     details = json.loads(row["details"] or "[]")
+    cover = row["cover"] or ""
     return {
-        "code": row["code"], "title": row["title"], "cover": row["cover"],
+        "code": row["code"], "title": row["title"], "cover": cover,
+        "cover_state": _cover_state(cover),
         "release_date": row["release_date"], "maker": row["maker"],
         "director": row["director"], "label": row["label"],
         "series": row["series"], "duration": row["duration"], "rating": row["rating"],
@@ -44,7 +57,7 @@ def _row_to_entry(row: sqlite3.Row, links: list[str], tags: list[dict]) -> dict:
         "genres": json.loads(row["genres"] or "[]"),
         "details": details,
         "field_links": field_links(details),
-        "fetched": bool(row["fetched"]),
+        "fetched": row["fetched"],
         "created_at": row["created_at"], "updated_at": row["updated_at"],
         "links": links, "tags": tags,
     }
@@ -66,7 +79,7 @@ def list_entries(limit: int | None = None, offset: int = 0, q: str = "") -> list
                  "OR label LIKE ? OR series LIKE ? OR release_date LIKE ? "
                  "OR actors LIKE ? OR genres LIKE ?")
         params = [like] * 9
-    order = "ORDER BY created_at DESC, code DESC"
+    order = "ORDER BY created_at DESC, rowid DESC"
     with db.conn() as conn:
         if limit is None:
             rows = conn.execute(f"SELECT * FROM entries {where} {order}", params).fetchall()
@@ -91,10 +104,14 @@ def get_entry(code: str) -> dict | None:
 
 
 def import_links(urls: list[str]) -> dict:
-    """链接导入：从每个链接提取番号，建条目 + 挂链接（不联网）。"""
+    """链接导入：从每个链接提取番号，建条目 + 挂链接（不联网）。
+
+    返回里带 `to_fetch`：本次导入后仍待抓取（fetched=0）的链接，供后台抓取入队。
+    """
     urls = [u.strip() for u in (urls or []) if isinstance(u, str) and u.strip()]
     inserted = existing = 0
     unrecognized: list[str] = []
+    to_fetch: list[str] = []
     with db.conn() as conn:
         for url in urls:
             code = extract_code(url)
@@ -111,7 +128,11 @@ def import_links(urls: list[str]) -> dict:
                 inserted += 1
             else:
                 existing += 1
-    return {"inserted": inserted, "existing": existing, "unrecognized": unrecognized}
+            row = conn.execute("SELECT fetched FROM entries WHERE code = ?", (code,)).fetchone()
+            if row is not None and not row["fetched"]:
+                to_fetch.append(url)
+    return {"inserted": inserted, "existing": existing, "unrecognized": unrecognized,
+            "to_fetch": to_fetch}
 
 
 def ingest_fetched(meta: dict) -> dict | None:
@@ -134,7 +155,7 @@ def ingest_fetched(meta: dict) -> dict | None:
         old = conn.execute("SELECT * FROM entries WHERE code = ?", (code,)).fetchone()
         if not success and old is not None:
             conn.execute(
-                "UPDATE entries SET fetched = 1, updated_at = datetime('now','localtime') WHERE code = ?",
+                "UPDATE entries SET fetched = 2, updated_at = datetime('now','localtime') WHERE code = ?",
                 (code,),
             )
         else:
@@ -212,11 +233,36 @@ def delete_entry(code: str) -> bool:
 
 
 def list_pending_links(limit: int = 5000) -> list[str]:
+    """待抓取链接（fetched=0）；冻结域名下的链接不参与（保持冻结、不反复抓）。"""
     with db.conn() as conn:
         rows = conn.execute(
             "SELECT el.url FROM entry_links el JOIN entries e ON e.code = el.code "
-            "WHERE e.fetched = 0 ORDER BY el.rowid LIMIT ?", (limit,)).fetchall()
+            "LEFT JOIN domain_state ds ON ds.domain = el.domain "
+            "WHERE e.fetched = 0 AND (ds.frozen IS NULL OR ds.frozen = 0) "
+            "ORDER BY el.rowid LIMIT ?", (limit,)).fetchall()
         return [r["url"] for r in rows]
+
+
+def list_failed_links(limit: int = 5000) -> list[str]:
+    """抓取失败的链接（fetched=2）；冻结域名下不参与，供低优先级重试。"""
+    with db.conn() as conn:
+        rows = conn.execute(
+            "SELECT el.url FROM entry_links el JOIN entries e ON e.code = el.code "
+            "LEFT JOIN domain_state ds ON ds.domain = el.domain "
+            "WHERE e.fetched = 2 AND (ds.frozen IS NULL OR ds.frozen = 0) "
+            "ORDER BY el.rowid LIMIT ?", (limit,)).fetchall()
+        return [r["url"] for r in rows]
+
+
+def queue_stats() -> dict:
+    """抓取队列统计：未抓取数 / 失败数（排除冻结域名）。"""
+    base = ("FROM entry_links el JOIN entries e ON e.code = el.code "
+            "LEFT JOIN domain_state ds ON ds.domain = el.domain "
+            "WHERE (ds.frozen IS NULL OR ds.frozen = 0) AND ")
+    with db.conn() as conn:
+        pending = conn.execute(f"SELECT count(*) {base} e.fetched = 0").fetchone()[0]
+        failed = conn.execute(f"SELECT count(*) {base} e.fetched = 2").fetchone()[0]
+    return {"pending": pending, "failed": failed}
 
 
 # ──────────────────────── 详情代理补全 ────────────────────────
@@ -313,3 +359,120 @@ def remove_tag_from_entry(code: str, tag_id: int) -> bool:
     with db.conn() as conn:
         cur = conn.execute("DELETE FROM entry_tags WHERE code = ? AND tag_id = ?", (code, tag_id))
         return cur.rowcount > 0
+
+
+# ──────────────────────── 域名管理 ────────────────────────
+
+def list_domains() -> list[dict]:
+    """库中所有域名及其状态（链接数 / 待抓数 / 冻结 / 最近检测）。"""
+    with db.conn() as conn:
+        rows = conn.execute(
+            "SELECT el.domain, COUNT(*) AS link_count, "
+            "SUM(CASE WHEN e.fetched = 0 THEN 1 ELSE 0 END) AS pending_count "
+            "FROM entry_links el JOIN entries e ON e.code = el.code "
+            "GROUP BY el.domain ORDER BY el.domain"
+        ).fetchall()
+        states = {r["domain"]: r for r in conn.execute("SELECT * FROM domain_state").fetchall()}
+    out: list[dict] = []
+    for r in rows:
+        d = r["domain"]
+        st = states.get(d)
+        out.append({
+            "domain": d,
+            "link_count": r["link_count"],
+            "pending_count": r["pending_count"] or 0,
+            "frozen": bool(st["frozen"]) if st else False,
+            "replacement": (st["replacement"] if st else "") or "",
+            "ok": bool(st["ok"]) if st else True,
+            "checked_at": (st["checked_at"] if st else "") or "",
+        })
+    return out
+
+
+def set_domain_frozen(domain: str, frozen: bool) -> bool:
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return False
+    with db.conn() as conn:
+        conn.execute(
+            "INSERT INTO domain_state (domain, frozen) VALUES (?, ?) "
+            "ON CONFLICT(domain) DO UPDATE SET frozen = excluded.frozen",
+            (domain, int(bool(frozen))),
+        )
+    return True
+
+
+def frozen_domains() -> set[str]:
+    """已冻结的域名集合（供后台抓取快速跳过）。"""
+    with db.conn() as conn:
+        rows = conn.execute("SELECT domain FROM domain_state WHERE frozen = 1").fetchall()
+        return {r["domain"] for r in rows}
+
+
+def record_domain_check(domain: str, ok: bool) -> None:
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return
+    with db.conn() as conn:
+        conn.execute(
+            "INSERT INTO domain_state (domain, ok, checked_at) VALUES (?, ?, datetime('now','localtime')) "
+            "ON CONFLICT(domain) DO UPDATE SET ok = excluded.ok, checked_at = excluded.checked_at",
+            (domain, int(bool(ok))),
+        )
+
+
+def _replace_domain_in_url(url: str, from_domain: str, to_domain: str) -> str:
+    """把 URL 的 host 中的 from_domain（含子域名前缀）替换为 to_domain，其余部分保留。"""
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        return ""
+    host = (parts.hostname or "").lower()
+    if not host or not (host == from_domain or host.endswith("." + from_domain)):
+        return ""
+    if host == from_domain:
+        new_host = to_domain
+    else:
+        new_host = host[: -(len(from_domain) + 1)] + "." + to_domain
+    netloc = new_host
+    if parts.port:
+        netloc = f"{new_host}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def replace_domain(from_domain: str, to_domain: str) -> dict:
+    """批量替换某域名下所有链接的域名为新域名，并记录替换关系。"""
+    from_domain = (from_domain or "").strip().lower()
+    to_domain = (to_domain or "").strip().lower()
+    if not from_domain or not to_domain or from_domain == to_domain:
+        return {"replaced": 0, "from_domain": from_domain, "to_domain": to_domain}
+    with db.conn() as conn:
+        rows = conn.execute("SELECT url FROM entry_links WHERE domain = ?", (from_domain,)).fetchall()
+        replaced = 0
+        for r in rows:
+            old = r["url"]
+            new = _replace_domain_in_url(old, from_domain, to_domain)
+            if not new or new == old:
+                continue
+            if conn.execute("SELECT 1 FROM entry_links WHERE url = ?", (new,)).fetchone():
+                # 新链接已存在 → 视为合并，删除旧链接（保留已有）
+                conn.execute("DELETE FROM entry_links WHERE url = ?", (old,))
+            else:
+                conn.execute(
+                    "UPDATE entry_links SET url = ?, domain = ? WHERE url = ?",
+                    (new, _root_domain(new), old),
+                )
+            replaced += 1
+        # 同步替换封面 URL 里含旧域名的地址（整体修改，避免封面失效）
+        for r in conn.execute(
+            "SELECT code, cover FROM entries WHERE cover LIKE ?", (f"%{from_domain}%",)
+        ).fetchall():
+            new_cover = _replace_domain_in_url(r["cover"], from_domain, to_domain)
+            if new_cover and new_cover != r["cover"]:
+                conn.execute("UPDATE entries SET cover = ? WHERE code = ?", (new_cover, r["code"]))
+        conn.execute(
+            "INSERT INTO domain_state (domain, replacement) VALUES (?, ?) "
+            "ON CONFLICT(domain) DO UPDATE SET replacement = excluded.replacement",
+            (from_domain, to_domain),
+        )
+    return {"replaced": replaced, "from_domain": from_domain, "to_domain": to_domain}

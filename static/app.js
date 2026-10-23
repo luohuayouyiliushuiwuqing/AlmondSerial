@@ -1,5 +1,5 @@
 // 动漫管理器前端（无构建 SPA）
-const state = { entries: [], total: 0, q: "", tags: [], pending: [] };
+const state = { entries: [], total: 0, q: "", tags: [], pending: [], queue: { pending: 0, failed: 0, queue: 0 } };
 
 const $ = (sel) => document.querySelector(sel);
 const grid = $("#grid");
@@ -49,11 +49,45 @@ async function loadEntries() {
   renderGrid();
 }
 
-function coverUrl(e) {
+function coverUrl(e, refresh) {
   if (!e.cover) return "";
   const q = `src=${encodeURIComponent(e.cover)}`;
   const ref = e.links && e.links.length ? `&referer=${encodeURIComponent(e.links[0])}` : "";
-  return `/api/img?${q}${ref}`;
+  const rf = refresh ? "&refresh=1" : "";
+  return `/api/img?${q}${ref}${rf}`;
+}
+
+function coverStateOf(e) {
+  return Number.isInteger(e.cover_state) ? e.cover_state : (e.cover ? 1 : 0);
+}
+
+function imgBadge(text, cls) {
+  const b = document.createElement("span");
+  b.className = "img-badge " + cls;
+  b.textContent = text;
+  return b;
+}
+
+function buildRetryBtn(container, e) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn btn-mini cover-retry";
+  b.textContent = "重试封面";
+  b.addEventListener("click", () => {
+    container.classList.remove("cover-fallback");
+    container.textContent = "";
+    const img = document.createElement("img");
+    img.src = coverUrl(e, true);
+    img.alt = e.title || "";
+    img.onerror = () => {
+      img.remove();
+      container.classList.add("cover-fallback");
+      container.textContent = e.code;
+      container.appendChild(buildRetryBtn(container, e));
+    };
+    container.appendChild(img);
+  });
+  return b;
 }
 
 function renderGrid() {
@@ -72,7 +106,8 @@ function renderCard(e) {
 
   const cover = document.createElement("div");
   cover.className = "card-cover";
-  if (e.cover) {
+  const coverState = coverStateOf(e);
+  if (e.cover && coverState !== 3) {
     const img = document.createElement("img");
     img.src = coverUrl(e);
     img.loading = "lazy";
@@ -82,6 +117,11 @@ function renderCard(e) {
   } else {
     cover.classList.add("cover-fallback");
     cover.textContent = e.code;
+  }
+  if (coverState === 3) {
+    cover.appendChild(imgBadge("图失败", "failed"));
+  } else if (coverState === 0 && e.fetched === 1) {
+    cover.appendChild(imgBadge("缺图", "missing"));
   }
 
   // 打开来源链接按钮（hover 显示，新标签打开第一条链接，不触发进详情）
@@ -108,7 +148,11 @@ function renderCard(e) {
   const meta = document.createElement("div");
   meta.className = "card-meta";
   meta.textContent = e.release_date || "";
-  body.append(code, title, meta);
+  const time = document.createElement("div");
+  time.className = "card-time";
+  time.title = "录入时间";
+  time.textContent = e.created_at ? `录入 ${e.created_at}` : "";
+  body.append(code, title, meta, time);
 
   if (e.genres && e.genres.length) {
     const tags = document.createElement("div");
@@ -122,10 +166,15 @@ function renderCard(e) {
     body.appendChild(tags);
   }
 
-  if (!e.fetched) {
+  if (e.fetched === 0) {
     const badge = document.createElement("span");
     badge.className = "pending-dot";
     badge.title = "待抓取";
+    card.appendChild(badge);
+  } else if (e.fetched === 2) {
+    const badge = document.createElement("span");
+    badge.className = "failed-dot";
+    badge.title = "抓取失败";
     card.appendChild(badge);
   }
 
@@ -206,7 +255,8 @@ function renderDetail(e) {
 
   const cover = document.createElement("div");
   cover.className = "detail-cover";
-  if (e.cover) {
+  const coverState = coverStateOf(e);
+  if (e.cover && coverState !== 3) {
     const img = document.createElement("img");
     img.src = coverUrl(e);
     img.alt = e.title;
@@ -215,6 +265,7 @@ function renderDetail(e) {
   } else {
     cover.classList.add("cover-fallback");
     cover.textContent = e.code;
+    if (coverState === 3) cover.appendChild(buildRetryBtn(cover, e));
   }
 
   const info = document.createElement("div");
@@ -228,15 +279,18 @@ function renderDetail(e) {
 
   const props = document.createElement("div");
   props.className = "detail-props";
-  props.append(
-    fieldRow("发行日期", e.release_date),
-    fieldRow("片商", e.maker, firstLink(e, "maker")),
-    fieldRow("导演", e.director, firstLink(e, "director")),
-    fieldRow("标籤", e.label, firstLink(e, "label")),
-    fieldRow("系列", e.series),
-    fieldRow("时长", e.duration),
-    fieldRow("评分", e.rating),
-  );
+  const propFields = [
+    ["发行日期", e.release_date, ""],
+    ["片商", e.maker, firstLink(e, "maker")],
+    ["导演", e.director, firstLink(e, "director")],
+    ["厂牌", e.label, firstLink(e, "label")],
+    ["系列", e.series, firstLink(e, "series")],
+    ["时长", e.duration, ""],
+    ["评分", e.rating, ""],
+  ];
+  for (const [label, value, href] of propFields) {
+    if (value) props.appendChild(fieldRow(label, value, href));
+  }
   info.appendChild(props);
 
   head.append(cover, info);
@@ -407,7 +461,7 @@ function renderEdit(e) {
     ["release_date", "发行日期", e.release_date],
     ["maker", "片商", e.maker],
     ["director", "导演", e.director],
-    ["label", "标籤", e.label],
+    ["label", "厂牌", e.label],
     ["series", "系列", e.series],
     ["duration", "时长", e.duration],
     ["rating", "评分", e.rating],
@@ -464,23 +518,7 @@ async function importLinks(text) {
   if (res.unrecognized.length) parts.push(`识别不出 ${res.unrecognized.length}`);
   toast("导入完成：" + parts.join(" · "));
   await loadEntries();
-  backfill();
-}
-
-async function backfill() {
-  const { urls } = await api("/api/entries/pending");
-  if (!urls.length) return;
-  let done = 0;
-  const worker = async () => {
-    while (urls.length) {
-      const url = urls.shift();
-      try { await api("/api/fetch", { method: "POST", body: { url } }); } catch (e) {}
-      done += 1;
-    }
-  };
-  await Promise.all([worker(), worker(), worker()]);
-  toast(`补抓完成 ${done} 条`);
-  loadEntries();
+  checkImportedDomains(urls);
 }
 
 // ──────────────────────── 导出 ────────────────────────
@@ -657,7 +695,7 @@ function renderImportModal() {
       toast("导入完成：" + parts.join(" · "));
       closeModal();
       await loadEntries();
-      backfill();
+      checkImportedDomains(urls);
     } finally {
       confirmBtn.disabled = false;
       confirmBtn.textContent = "确认导入";
@@ -886,6 +924,188 @@ async function openDbPanel(directory = "") {
   modal.hidden = false;
 }
 
+// ──────────────────────── 域名管理 ────────────────────────
+
+function rootDomain(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    const parts = host.split(".");
+    return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+  } catch (e) { return ""; }
+}
+
+function mkBtn(text, cls, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = cls;
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function cleanDomainInput(raw) {
+  return (raw || "").trim().replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+}
+
+function openReplaceForm(fromDomain) {
+  modalBody.innerHTML = "";
+  const h = document.createElement("h2");
+  h.textContent = `替换域名：${fromDomain}`;
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "将把该域名下所有链接（及封面图地址）的域名整体替换为新域名，路径保持不变。";
+
+  const form = document.createElement("form");
+  form.className = "edit-form";
+  const label = document.createElement("label");
+  label.textContent = "新域名（如 xxx.com，可带 https:// 前缀）";
+  const input = document.createElement("input");
+  input.placeholder = "xxx.com";
+  input.autocomplete = "off";
+  label.appendChild(input);
+  form.appendChild(label);
+
+  const actions = document.createElement("div");
+  actions.className = "detail-actions";
+  actions.append(mkBtn("取消", "btn", openDomainsPanel));
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "btn btn-primary";
+  submit.textContent = "确认替换";
+  actions.appendChild(submit);
+  form.appendChild(actions);
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const toDomain = cleanDomainInput(input.value);
+    if (!toDomain) { toast("域名无效"); return; }
+    submit.disabled = true;
+    submit.textContent = "替换中…";
+    try {
+      const r = await api("/api/domains/replace", { method: "POST", body: { from_domain: fromDomain, to_domain: toDomain } });
+      toast(`已替换 ${r.replaced} 条链接`);
+      await loadEntries();
+      openDomainsPanel();
+    } catch (e) {
+      toast("替换失败：" + e.message);
+      submit.disabled = false;
+      submit.textContent = "确认替换";
+    }
+  });
+
+  modalBody.append(h, hint, form);
+  modal.hidden = false;
+}
+
+async function openDomainsPanel() {
+  const data = await api("/api/domains");
+  const domains = data.domains || [];
+  modalBody.innerHTML = "";
+
+  const h = document.createElement("h2");
+  h.textContent = "域名管理";
+  modalBody.appendChild(h);
+
+  const list = document.createElement("div");
+  list.className = "domain-manage";
+
+  if (!domains.length) {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "（库中还没有链接，无域名）";
+    list.appendChild(none);
+  }
+
+  for (const d of domains) {
+    const row = document.createElement("div");
+    row.className = "domain-row";
+
+    const info = document.createElement("div");
+    info.className = "domain-info";
+    const name = document.createElement("div");
+    name.className = "domain-name";
+    name.textContent = d.domain;
+    const meta = document.createElement("div");
+    meta.className = "domain-meta";
+    const statusText = d.frozen ? "已冻结" : (d.checked_at ? (d.ok ? "最近检测可用" : "最近检测不可用") : "未检测");
+    meta.textContent = `链接 ${d.link_count} · 待抓 ${d.pending_count} · ${statusText}`;
+    info.append(name, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "domain-actions";
+    actions.append(
+      mkBtn("检测", "btn btn-mini", async () => {
+        const r = await api("/api/domains/check", { method: "POST", body: { domain: d.domain } });
+        toast(r.ok ? `域名可用（HTTP ${r.status}）` : `域名不可用：${r.error || "无响应"}`);
+        openDomainsPanel();
+      }),
+      mkBtn(d.frozen ? "解冻" : "冻结", "btn btn-mini" + (d.frozen ? "" : " btn-danger"), async () => {
+        await api("/api/domains/freeze", { method: "POST", body: { domain: d.domain, frozen: !d.frozen } });
+        toast(d.frozen ? "已解冻" : "已冻结");
+        openDomainsPanel();
+      }),
+      mkBtn("替换域名", "btn btn-mini", () => openReplaceForm(d.domain)),
+    );
+
+    row.append(info, actions);
+    list.appendChild(row);
+  }
+
+  modalBody.appendChild(list);
+  modal.hidden = false;
+}
+
+function renderDomainAlert(bad) {
+  modalBody.innerHTML = "";
+  const h = document.createElement("h2");
+  h.textContent = "检测到不可用的域名";
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "以下域名连接失败（可能已失效或被墙）。可批量替换为新域名，或冻结以暂停抓取。";
+
+  const list = document.createElement("div");
+  list.className = "domain-manage";
+  for (const d of bad) {
+    const row = document.createElement("div");
+    row.className = "domain-row";
+    const info = document.createElement("div");
+    info.className = "domain-info";
+    const name = document.createElement("div");
+    name.className = "domain-name";
+    name.textContent = d.domain;
+    const meta = document.createElement("div");
+    meta.className = "domain-meta";
+    meta.textContent = d.error || "无响应";
+    info.append(name, meta);
+    const actions = document.createElement("div");
+    actions.className = "domain-actions";
+    actions.append(
+      mkBtn("替换域名", "btn btn-mini", () => openReplaceForm(d.domain)),
+      mkBtn("冻结", "btn btn-mini btn-danger", async () => {
+        await api("/api/domains/freeze", { method: "POST", body: { domain: d.domain, frozen: true } });
+        toast("已冻结 " + d.domain);
+        closeModal();
+      }),
+    );
+    row.append(info, actions);
+    list.appendChild(row);
+  }
+
+  modalBody.append(h, hint, list, mkBtn("关闭", "btn", closeModal));
+  modal.hidden = false;
+}
+
+async function checkImportedDomains(urls) {
+  const domains = [...new Set(urls.map(rootDomain).filter(Boolean))];
+  if (!domains.length) return;
+  const results = await Promise.all(domains.map((d) =>
+    api("/api/domains/check", { method: "POST", body: { domain: d } })
+      .catch(() => ({ domain: d, ok: false, error: "检测失败" }))
+  ));
+  const bad = results.filter((r) => !r.ok);
+  if (bad.length) renderDomainAlert(bad);
+}
+
 // ──────────────────────── 事件绑定 ────────────────────────
 
 $("#import-form").addEventListener("submit", (ev) => {
@@ -906,6 +1126,7 @@ $("#search-input").addEventListener("input", (ev) => {
 
 $("#export-btn").addEventListener("click", exportTxt);
 $("#db-btn").addEventListener("click", () => openDbPanel());
+$("#domains-btn").addEventListener("click", openDomainsPanel);
 $("#proxy-btn").addEventListener("click", openProxyPanel);
 $("#file-import-btn").addEventListener("click", () => $("#file-input").click());
 $("#file-input").addEventListener("change", async (ev) => {
@@ -927,6 +1148,20 @@ document.addEventListener("keydown", (ev) => {
 
 // ──────────────────────── 启动 ────────────────────────
 
+async function updateQueueStatus() {
+  try {
+    const st = await api("/api/queue/status");
+    state.queue = st;
+    const el = $("#queue-text");
+    if (!el) return;
+    const parts = [];
+    if (st.queue > 0) parts.push(`抓取中 ${st.queue} 条`);
+    if (st.pending > 0) parts.push(`待抓取 ${st.pending}`);
+    if (st.failed > 0) parts.push(`失败 ${st.failed}`);
+    el.textContent = parts.length ? parts.join(" · ") : "";
+  } catch (e) {}
+}
+
 (async function init() {
   try {
     const [tags] = await Promise.all([
@@ -934,7 +1169,12 @@ document.addEventListener("keydown", (ev) => {
       loadEntries(),
     ]);
     state.tags = tags.tags;
-    backfill();
+    updateQueueStatus();
+    // 后台抓取由服务端 worker 进行，前端定时刷新即可看到进度
+    setInterval(() => {
+      loadEntries().catch(() => {});
+      updateQueueStatus();
+    }, 3000);
   } catch (e) {
     stats.textContent = "加载失败：" + e.message;
     empty.hidden = false;

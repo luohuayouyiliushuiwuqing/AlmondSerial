@@ -96,6 +96,33 @@ def _parse_date(value: str, datetime_val: str) -> str:
     return ""
 
 
+# 「标签/標籤」跨站点语义不一：有的站点用它表示类型(genres)，有的站点（链接指向 /cn/labels/）
+# 用它表示厂牌(label)。这里按链接作用消歧；无链接时按用户反馈默认归为类型(genres)。
+_TAG_LABELS = {"标签", "标籤", "標籤", "標签"}
+
+
+def _first_link_kind(links) -> str | None:
+    for l in links or []:
+        if isinstance(l, dict):
+            kind = link_kind(l.get("href"))
+            if kind:
+                return kind
+    return None
+
+
+def _resolve_field(label: str, links: list) -> str | None:
+    """标签文字 + 链接 href → 类型化字段（含「标签/標籤」的跨站点消歧）。"""
+    field = _ALIAS_MAP.get(label)
+    if field == "label" and label in _TAG_LABELS:
+        kind = _first_link_kind(links)
+        return _KIND_TO_FIELD.get(kind) if kind else "genres"
+    if field:
+        return field
+    # 标签文字未命中 → 用链接 href 作用通配识别兜底
+    kind = _first_link_kind(links)
+    return _KIND_TO_FIELD.get(kind) if kind else None
+
+
 def classify(details: list[dict]) -> dict:
     """把通用详情行归类成类型化字段（首个命中优先；值在文本或链接文字里都能取到）。"""
     out = {
@@ -107,16 +134,7 @@ def classify(details: list[dict]) -> dict:
         if not isinstance(row, dict):
             continue
         label = _norm_label(row.get("label") or "")
-        field = _ALIAS_MAP.get(label)
-        if not field:
-            # 标签文字未命中 → 用链接 href 作用通配识别兜底（如繁体「标籤」也能归到 label）
-            for l in row.get("links") or []:
-                if not isinstance(l, dict):
-                    continue
-                kind = link_kind(l.get("href"))
-                if kind:
-                    field = _KIND_TO_FIELD.get(kind)
-                    break
+        field = _resolve_field(label, row.get("links") or [])
         if not field:
             continue
 
@@ -157,15 +175,7 @@ def field_links(details: list[dict]) -> dict[str, list[dict]]:
         if not isinstance(row, dict):
             continue
         label = _norm_label(row.get("label") or "")
-        field = _ALIAS_MAP.get(label)
-        if not field:
-            for l in row.get("links") or []:
-                if not isinstance(l, dict):
-                    continue
-                kind = link_kind(l.get("href"))
-                if kind:
-                    field = _KIND_TO_FIELD.get(kind)
-                    break
+        field = _resolve_field(label, row.get("links") or [])
         if not field:
             continue
         links = [

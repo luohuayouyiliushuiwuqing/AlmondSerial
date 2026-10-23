@@ -12,16 +12,19 @@ from urllib.request import ProxyHandler, build_opener
 
 import base64
 import logging
+import threading
 
+import anyio.to_thread
 from loguru import logger
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cookies as cookie_ctl
-from . import db, entries, imgcache, importer, proxy
-from .fetcher import fetch_page
+from . import db, entries, imgcache, importer, proxy, worker
+from .fetcher import check_domain, fetch_page
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -30,13 +33,28 @@ logging.getLogger("scrapling").setLevel(logging.WARNING)
 
 app = FastAPI(title="动漫管理器（番号库）")
 
+# 本地个人工具：允许跨域调用（浏览器插件 / 预览页直连后端），不涉及鉴权
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.on_event("startup")
-def _startup():
+async def _startup():
+    # 增大线程池容量，避免后台抓取占满后页面操作排队
+    try:
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 200
+    except Exception:  # noqa: BLE001
+        pass
     # 启动后台持续验证代理可用性（每 60s 强制探测一次；未配置代理时为空转）
     proxy.start_background_check()
-    # 启动后立刻探测一次代理，让当前状态第一时间就绪并打印结果
-    proxy.check_now()
+    # 后台线程立即探测一次代理，不阻塞应用启动
+    threading.Thread(target=proxy.check_now, daemon=True).start()
+    # 启动后台抓取 worker（前端无需保活，抓取在服务端持续进行）
+    worker.start()
 
 
 # ──────────────────────── 请求体模型 ────────────────────────
@@ -84,6 +102,29 @@ class DbRequest(BaseModel):
     path: str
 
 
+class DomainCheckRequest(BaseModel):
+    domain: str
+
+
+class DomainFreezeRequest(BaseModel):
+    domain: str
+    frozen: bool
+
+
+class DomainReplaceRequest(BaseModel):
+    from_domain: str
+    to_domain: str
+
+
+class CaptureRequest(BaseModel):
+    url: str
+    title: str = ""
+    thumbnail: str = ""
+    details: list[dict] = []
+    image_base64: str = ""
+    image_type: str = ""
+
+
 # ──────────────────────── 条目 ────────────────────────
 
 @app.get("/api/entries")
@@ -97,11 +138,20 @@ def api_pending():
     return {"urls": entries.list_pending_links()}
 
 
+@app.get("/api/queue/status")
+def api_queue_status():
+    """后台抓取队列状态（队列剩余 / worker 数 / 未抓取数 / 失败数）。"""
+    return {**worker.status(), **entries.queue_stats()}
+
+
 @app.post("/api/entries/import")
 def api_import(req: ImportRequest):
     if not req.urls:
         raise HTTPException(400, "缺少 urls")
-    return {"ok": True, **entries.import_links(req.urls)}
+    result = entries.import_links(req.urls)
+    for url in result.get("to_fetch", []):
+        worker.enqueue(url)
+    return {"ok": True, **result}
 
 
 @app.get("/api/entry/{code}")
@@ -153,7 +203,40 @@ def api_fetch_entry(code: str):
     for url in e["links"]:
         meta = fetch_page(url)
         entries.ingest_fetched(meta)
+    # 手动重新抓取详情后，给封面图像一次重新抓取的机会（清除失败标记）
+    e2 = entries.get_entry(code)
+    if e2 and e2["cover"]:
+        imgcache.clear_failed(e2["cover"])
     return entries.enrich_entry(code)
+
+
+@app.post("/api/entries/capture")
+def api_capture(req: CaptureRequest):
+    """浏览器插件直存：插件已在页面 DOM 里抽好标题/封面/关键信息，直接回填保存。
+
+    - 复用 ingest_fetched 的番号识别 + 字段归类 + 合并（不覆盖已有非空字段）。
+    - 可选带 image_base64（插件已抓到的封面字节），直接落 imgcache，省去后端再抓。
+    """
+    url = (req.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "缺少页面地址")
+    thumbnail = (req.thumbnail or "").strip()
+    if not thumbnail.startswith(("http://", "https://")):
+        thumbnail = ""
+    meta = {"url": url, "title": (req.title or "").strip(),
+            "thumbnail": thumbnail, "details": req.details or [], "success": True}
+    e = entries.ingest_fetched(meta)
+    if e is None:
+        return {"ok": True, "unrecognized": True}
+    if req.image_base64 and e.get("cover"):
+        try:
+            data = base64.b64decode(req.image_base64)
+            if data:
+                imgcache.put(e["cover"], data, (req.image_type or "image/jpeg").strip())
+                e = entries.get_entry(e["code"]) or e
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"插件封面字节落缓存失败：{exc}")
+    return {"ok": True, "entry": e}
 
 
 @app.post("/api/entry/{code}/enrich")
@@ -256,6 +339,44 @@ def api_db_set(req: DbRequest):
     }
 
 
+# ──────────────────────── 域名管理 ────────────────────────
+
+@app.get("/api/domains")
+def api_domains():
+    """库中所有域名及其状态（链接数/待抓数/冻结/最近检测）。"""
+    return {"domains": entries.list_domains()}
+
+
+@app.post("/api/domains/check")
+def api_domain_check(req: DomainCheckRequest):
+    """探测单个域名可达性，并记录最近检测结果。"""
+    if not req.domain.strip():
+        raise HTTPException(400, "缺少域名")
+    result = check_domain(req.domain.strip())
+    entries.record_domain_check(result["domain"], result["ok"])
+    return result
+
+
+@app.post("/api/domains/freeze")
+def api_domain_freeze(req: DomainFreezeRequest):
+    """冻结/解冻某域名：冻结后该域名下所有链接不参与待抓取列表。"""
+    if not req.domain.strip():
+        raise HTTPException(400, "缺少域名")
+    if not entries.set_domain_frozen(req.domain.strip(), req.frozen):
+        raise HTTPException(400, "域名无效")
+    worker.mark_frozen(req.domain.strip(), req.frozen)
+    return {"ok": True, "domain": req.domain.strip().lower(), "frozen": req.frozen}
+
+
+@app.post("/api/domains/replace")
+def api_domain_replace(req: DomainReplaceRequest):
+    """批量把某域名下所有链接的域名替换为新域名。"""
+    result = entries.replace_domain(req.from_domain, req.to_domain)
+    if result["replaced"] == 0 and not result["from_domain"]:
+        raise HTTPException(400, "缺少原域名或新域名")
+    return {"ok": True, **result, "domains": entries.list_domains()}
+
+
 # ──────────────────────── 全局代理 ────────────────────────
 
 @app.get("/api/proxy")
@@ -320,24 +441,33 @@ def _fetch_image_bytes(src: str, proxy_url: str | None, timeout: int = 15,
 
 
 @app.get("/api/img")
-def api_img(src: str, referer: str = ""):
+def api_img(src: str, referer: str = "", refresh: int = 0):
     """服务端代抓图片（封面跨域/防盗链兜底），走**全局代理**，并**落盘缓存**。
 
     - `referer`：来源页面地址，用于防盗链校验（缺省回退图片同源）。
     - 命中本地缓存 → 直接返回（避免重复抓取同一张图）。
     - 缓存未命中 → 抓取 → 写缓存 → 返回。
+    - 抓图失败 → 写入失败标记；此后同一链接直接 404，不再重复抓取。
+    - `refresh=1`：清除失败标记并强制重新抓取（绕过缓存）。
     - 代理端口漂移导致连接失败时，强制重新探测代理再重试一次。
     """
     if not src.startswith(("http://", "https://")):
         raise HTTPException(400, "src 必须是 http(s) 地址")
 
-    # ① 先查本地缓存
-    cached = imgcache.get(src)
-    if cached is not None:
-        data, ctype = cached
-        return Response(content=data, media_type=ctype)
+    # ① 已知失败且未要求强制重试 → 直接 404，不重复抓取
+    if imgcache.is_failed(src) and not refresh:
+        raise HTTPException(404, "图片抓取失败（该链接此前已失败，暂不重试）")
+    if refresh:
+        imgcache.clear_failed(src)
 
-    # ② 缓存未命中 → 抓取
+    # ② 命中本地缓存 → 直接返回（refresh 强制重抓时绕过）
+    if not refresh:
+        cached = imgcache.get(src)
+        if cached is not None:
+            data, ctype = cached
+            return Response(content=data, media_type=ctype)
+
+    # ③ 缓存未命中 → 抓取
     proxy_url = proxy.resolve() or None
     got = _fetch_image_bytes(src, proxy_url, referer=referer)
     if got is None and proxy_url:
@@ -345,9 +475,10 @@ def api_img(src: str, referer: str = ""):
         proxy_url = proxy.resolve(force=True) or None
         got = _fetch_image_bytes(src, proxy_url, referer=referer)
     if got is None:
+        imgcache.mark_failed(src)
         raise HTTPException(404, "图片抓取失败（源站反爬或代理不可用）")
 
-    # ③ 落盘缓存，下次直接命中
+    # ④ 落盘缓存，下次直接命中（同时清除失败标记）
     data, ctype = got
     imgcache.put(src, data, ctype)
     return Response(content=data, media_type=ctype)

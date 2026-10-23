@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app import db, entries
+from app import db, entries, imgcache
 
 
 def _meta(url, **kw):
@@ -169,6 +169,44 @@ class TestLinkIntegrity(Base):
         entries.import_links(urls)
         e = entries.get_entry("ABP-123")
         self.assertEqual(sorted(e["links"]), sorted(urls))  # 全部镜像链接都保留
+
+
+class TestOrdering(Base):
+    def test_list_newest_first(self):
+        entries.import_links(["https://a.com/AAA-111"])
+        entries.import_links(["https://a.com/BBB-222"])
+        with db.conn() as conn:
+            conn.execute("UPDATE entries SET created_at='2020-01-01 00:00:00' WHERE code='AAA-111'")
+            conn.execute("UPDATE entries SET created_at='2021-01-01 00:00:00' WHERE code='BBB-222'")
+        codes = [e["code"] for e in entries.list_entries()]
+        self.assertEqual(codes, ["BBB-222", "AAA-111"])  # 录入时间新的在前
+
+
+class TestCoverState(Base):
+    """封面（图像）抓取状态：0 无链接 / 1 有链接未抓图 / 2 已抓图 / 3 抓图失败。"""
+
+    def setUp(self):
+        super().setUp()
+        imgcache.CACHE_DIR = self.dir / "img"
+
+    def _entry(self, cover):
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.update_entry("ABP-123", {"cover": cover})
+        return entries.get_entry("ABP-123")
+
+    def test_no_cover_is_state_0(self):
+        self.assertEqual(self._entry("")["cover_state"], 0)
+
+    def test_cover_link_pending_is_state_1(self):
+        self.assertEqual(self._entry("https://img.example/a.jpg")["cover_state"], 1)
+
+    def test_cover_cached_is_state_2(self):
+        imgcache.put("https://img.example/a.jpg", b"IMG", "image/jpeg")
+        self.assertEqual(self._entry("https://img.example/a.jpg")["cover_state"], 2)
+
+    def test_cover_failed_is_state_3(self):
+        imgcache.mark_failed("https://img.example/a.jpg")
+        self.assertEqual(self._entry("https://img.example/a.jpg")["cover_state"], 3)
 
 
 if __name__ == "__main__":

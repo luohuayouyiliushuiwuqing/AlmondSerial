@@ -7,6 +7,7 @@
 import hashlib
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -25,6 +26,41 @@ def _key(src: str) -> str:
 
 def cache_path(src: str) -> Path:
     return CACHE_DIR / _key(src)
+
+
+def _fail_path(src: str) -> Path:
+    return Path(str(cache_path(src)) + ".fail")
+
+
+def has(src: str) -> bool:
+    """缓存是否存在（只查存在性，不读字节）。"""
+    return cache_path(src).exists()
+
+
+def is_failed(src: str) -> bool:
+    """该图像链接是否已被标记为「抓取失败」（暂时不可行，不再自动重试）。"""
+    return _fail_path(src).exists()
+
+
+def mark_failed(src: str) -> None:
+    """标记图像链接抓取失败：后续 /api/img 直接 404，不再重复抓取。"""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _fail_path(src).write_text(
+            datetime.now().isoformat(timespec="seconds"), encoding="utf-8"
+        )
+    except OSError as exc:  # noqa: BLE001
+        logger.warning(f"图片失败标记写入失败：{exc}")
+
+
+def clear_failed(src: str) -> None:
+    """清除失败标记（成功抓到图或用户手动重试时）。"""
+    try:
+        p = _fail_path(src)
+        if p.exists():
+            p.unlink()
+    except OSError as exc:  # noqa: BLE001
+        logger.warning(f"图片失败标记清除失败：{exc}")
 
 
 def get(src: str) -> tuple[bytes, str] | None:
@@ -53,3 +89,5 @@ def put(src: str, data: bytes, ctype: str) -> None:
             Path(str(p) + ".meta").write_text(ctype or "application/octet-stream", encoding="utf-8")
         except OSError as exc:  # noqa: BLE001
             logger.warning(f"图片缓存写入失败：{exc}")
+            return
+    clear_failed(src)

@@ -35,6 +35,21 @@ class TestImgCache(unittest.TestCase):
         imgcache.put("https://x.com/b.jpg", b"X", "")
         self.assertEqual(imgcache.get("https://x.com/b.jpg")[1], "application/octet-stream")
 
+    def test_has_and_failed_markers(self):
+        self.assertFalse(imgcache.has("https://x.com/c.jpg"))
+        self.assertFalse(imgcache.is_failed("https://x.com/c.jpg"))
+        imgcache.mark_failed("https://x.com/c.jpg")
+        self.assertTrue(imgcache.is_failed("https://x.com/c.jpg"))
+        self.assertFalse(imgcache.has("https://x.com/c.jpg"))
+        imgcache.clear_failed("https://x.com/c.jpg")
+        self.assertFalse(imgcache.is_failed("https://x.com/c.jpg"))
+
+    def test_put_clears_failed_mark(self):
+        imgcache.mark_failed("https://x.com/d.jpg")
+        imgcache.put("https://x.com/d.jpg", b"IMG", "image/jpeg")
+        self.assertTrue(imgcache.has("https://x.com/d.jpg"))
+        self.assertFalse(imgcache.is_failed("https://x.com/d.jpg"))
+
 
 if __name__ == "__main__":
     unittest.main()

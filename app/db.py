@@ -74,9 +74,17 @@ CREATE TABLE IF NOT EXISTS entry_tags (
     tag_id INTEGER NOT NULL,
     PRIMARY KEY (code, tag_id)
 );
+CREATE TABLE IF NOT EXISTS domain_state (
+    domain      TEXT PRIMARY KEY,
+    frozen      INTEGER NOT NULL DEFAULT 0,
+    replacement TEXT NOT NULL DEFAULT '',
+    ok          INTEGER NOT NULL DEFAULT 1,
+    checked_at  TEXT NOT NULL DEFAULT ''
+);
 """
 
 _ENSURE_LOCK = threading.Lock()
+_ENSURED: set[str] = set()
 
 
 def _migrate(connection: sqlite3.Connection) -> None:
@@ -89,6 +97,22 @@ def _migrate(connection: sqlite3.Connection) -> None:
             )
 
 
+def _ensure(connection: sqlite3.Connection, path: Path) -> None:
+    """每个数据库文件只初始化一次（建表 + 迁移 + WAL）。
+
+    高并发下大量连接若每次都对已建好的库重跑建表脚本，会在全局锁里串行化；
+    这里用已初始化集合跳过重复执行，锁只用于保护首次初始化。
+    """
+    key = str(path.resolve())
+    with _ENSURE_LOCK:
+        if key in _ENSURED:
+            return
+        connection.executescript(_SCHEMA)
+        _migrate(connection)
+        connection.execute("PRAGMA journal_mode=WAL")
+        _ENSURED.add(key)
+
+
 @contextmanager
 def conn():
     with _PATH_LOCK:
@@ -98,10 +122,7 @@ def conn():
     connection = sqlite3.connect(path, timeout=10)
     connection.row_factory = sqlite3.Row
     try:
-        with _ENSURE_LOCK:
-            connection.executescript(_SCHEMA)
-            _migrate(connection)
-            connection.execute("PRAGMA journal_mode=WAL")
+        _ensure(connection, path)
         with connection:
             yield connection
     finally:

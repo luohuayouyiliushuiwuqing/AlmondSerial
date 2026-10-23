@@ -109,8 +109,30 @@ def fetch_page(url: str, proxy: str | None = None,
             continue
         st = getattr(resp, "status", None)
         if resp is not None and (st is None or st < 400):
-            logger.info(f"{ename} 抓取成功：{url}")
             return _extract(url, resp, selector)
         logger.warning(f"{ename} 被反爬（HTTP {st}）：{url}")
 
     return {"url": url, "title": "", "thumbnail": "", "favicon": "", "success": False, "details": []}
+
+
+def check_domain(domain: str, proxy: str | None = None, timeout: int = 10) -> dict:
+    """探测域名是否可达：请求 https://domain/ 看是否有正常 HTTP 响应。
+
+    判定「可用」只看请求能否完成（得到任意状态码），连接失败/DNS/超时才算挂掉。
+    proxy 缺省用全局代理（与抓取一致）。
+    """
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return {"domain": domain, "ok": False, "status": None, "error": "空域名"}
+    if proxy is None:
+        proxy = proxyctl.resolve() or None
+    url = f"https://{domain}/"
+    try:
+        from curl_cffi import requests as cf
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        resp = cf.get(url, timeout=timeout, proxies=proxies,
+                      impersonate="chrome", allow_redirects=True)
+        return {"domain": domain, "ok": True, "status": resp.status_code}
+    except Exception as exc:  # noqa: BLE001
+        return {"domain": domain, "ok": False, "status": None,
+                "error": f"{type(exc).__name__}: {exc}"}
