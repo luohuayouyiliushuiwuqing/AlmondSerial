@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cookies as cookie_ctl
-from . import entries, importer, proxy
+from . import entries, imgcache, importer, proxy
 from .fetcher import fetch_page
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -257,13 +257,22 @@ def _fetch_image_bytes(src: str, proxy_url: str | None, timeout: int = 15) -> tu
 
 @app.get("/api/img")
 def api_img(src: str):
-    """服务端代抓图片（封面跨域/防盗链兜底），走**全局代理**（与网页抓取一致）。
+    """服务端代抓图片（封面跨域/防盗链兜底），走**全局代理**，并**落盘缓存**。
 
-    代理端口漂移导致连接失败时，强制重新探测代理再重试一次。
-    注意：源站若是 Cloudflare 类反爬（403），静态抓取无法绕过，需浏览器内核。
+    - 命中本地缓存 → 直接返回（避免重复抓取同一张图）。
+    - 缓存未命中 → 抓取 → 写缓存 → 返回。
+    - 代理端口漂移导致连接失败时，强制重新探测代理再重试一次。
     """
     if not src.startswith(("http://", "https://")):
         raise HTTPException(400, "src 必须是 http(s) 地址")
+
+    # ① 先查本地缓存
+    cached = imgcache.get(src)
+    if cached is not None:
+        data, ctype = cached
+        return Response(content=data, media_type=ctype)
+
+    # ② 缓存未命中 → 抓取
     proxy_url = proxy.resolve() or None
     got = _fetch_image_bytes(src, proxy_url)
     if got is None and proxy_url:
@@ -272,7 +281,10 @@ def api_img(src: str):
         got = _fetch_image_bytes(src, proxy_url)
     if got is None:
         raise HTTPException(404, "图片抓取失败（源站反爬或代理不可用）")
+
+    # ③ 落盘缓存，下次直接命中
     data, ctype = got
+    imgcache.put(src, data, ctype)
     return Response(content=data, media_type=ctype)
 
 
