@@ -21,6 +21,20 @@ cd AlmondSerial
 
 浏览器打开 <http://127.0.0.1:8000/>。数据库自动生成在 `data/library.db`。
 
+## 反爬站点 Cookie 注入
+
+Cloudflare 等反爬站（如 fourhoi.com）对自动化抓取返回 403。可在真实浏览器里通过验证后，
+把 Cookie 通过环境变量 `SITE_COOKIES` 注入（JSON：域名 → Cookie 串），抓取/抓图时按域名自动带上：
+
+```bash
+SITE_COOKIES='{"fourhoi.com": "cf_clearance=xxx; foo=bar"}' \
+  /home/igs/miniconda3/envs/xingren/bin/python run.py
+```
+
+按域名匹配（含子域名：`a.fourhoi.com` 命中 `fourhoi.com`）。抓取采用**三级降级**：
+静态 TLS 指纹（`Fetcher`）→ JS 渲染（`DynamicFetcher`）→ 反 Cloudflare（`StealthyFetcher`，
+需 chromium 内核，用 `patchright install chromium` 安装）。
+
 ## 目录结构
 
 ```

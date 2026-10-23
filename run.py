@@ -23,7 +23,10 @@ MAX_SCAN = 20
 
 
 def _port_free(port: int) -> bool:
+    # SO_REUSEADDR：TIME_WAIT 状态的端口也视为可用（重启可立即复用），
+    # 否则杀掉旧进程后的一小段时间会被误判为「仍被占用」而跳端口。
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((HOST, port))
             return True

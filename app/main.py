@@ -16,6 +16,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import cookies as cookie_ctl
 from . import entries, importer, proxy
 from .fetcher import fetch_page
 
@@ -236,18 +237,43 @@ def api_proxy_check():
 
 # ──────────────────────── 图片代理 ────────────────────────
 
-@app.get("/api/img")
-def api_img(src: str, proxy: str | None = None):
-    """服务端代抓图片（封面跨域/防盗链兜底）。"""
+def _fetch_image_bytes(src: str, proxy_url: str | None, timeout: int = 15) -> tuple[bytes, str] | None:
+    """用 urllib 抓取图片字节（带 Cookie 注入）；失败返回 None。"""
     try:
-        req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0"})
-        opener = build_opener(ProxyHandler({"http": proxy, "https": proxy})) if proxy else build_opener()
-        with opener.open(req, timeout=15) as r:
-            data = r.read()
-            ctype = r.headers.get("Content-Type", "application/octet-stream")
-        return Response(content=data, media_type=ctype)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(404, f"图片抓取失败: {exc}") from exc
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": src,  # 防盗链兜底
+        }
+        cookie = cookie_ctl.get_cookie_header(src)
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(src, headers=headers)
+        opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url})) if proxy_url else build_opener()
+        with opener.open(req, timeout=timeout) as r:
+            return r.read(), r.headers.get("Content-Type", "application/octet-stream")
+    except Exception:
+        return None
+
+
+@app.get("/api/img")
+def api_img(src: str):
+    """服务端代抓图片（封面跨域/防盗链兜底），走**全局代理**（与网页抓取一致）。
+
+    代理端口漂移导致连接失败时，强制重新探测代理再重试一次。
+    注意：源站若是 Cloudflare 类反爬（403），静态抓取无法绕过，需浏览器内核。
+    """
+    if not src.startswith(("http://", "https://")):
+        raise HTTPException(400, "src 必须是 http(s) 地址")
+    proxy_url = proxy.resolve() or None
+    got = _fetch_image_bytes(src, proxy_url)
+    if got is None and proxy_url:
+        # 代理可能失效（端口漂移/连接拒绝），强制重新探测后再试一次
+        proxy_url = proxy.resolve(force=True) or None
+        got = _fetch_image_bytes(src, proxy_url)
+    if got is None:
+        raise HTTPException(404, "图片抓取失败（源站反爬或代理不可用）")
+    data, ctype = got
+    return Response(content=data, media_type=ctype)
 
 
 # ──────────────────────── 静态托管（放最后） ────────────────────────
