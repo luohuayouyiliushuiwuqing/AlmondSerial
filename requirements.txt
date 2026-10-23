@@ -3,3 +3,4 @@ fastapi
 uvicorn
 loguru
 scrapling
+curl_cffi

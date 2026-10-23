@@ -7,20 +7,26 @@
 
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import ProxyHandler, build_opener
 
 import base64
+import logging
 
+from loguru import logger
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cookies as cookie_ctl
-from . import entries, imgcache, importer, proxy
+from . import db, entries, imgcache, importer, proxy
 from .fetcher import fetch_page
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+# 关闭 scrapling 的请求日志（如 "Fetched (200) <GET ...>"），只保留 WARNING 及以上
+logging.getLogger("scrapling").setLevel(logging.WARNING)
 
 app = FastAPI(title="动漫管理器（番号库）")
 
@@ -29,6 +35,8 @@ app = FastAPI(title="动漫管理器（番号库）")
 def _startup():
     # 启动后台持续验证代理可用性（每 60s 强制探测一次；未配置代理时为空转）
     proxy.start_background_check()
+    # 启动后立刻探测一次代理，让当前状态第一时间就绪并打印结果
+    proxy.check_now()
 
 
 # ──────────────────────── 请求体模型 ────────────────────────
@@ -70,6 +78,10 @@ class TagEntryRequest(BaseModel):
 class ImportFileRequest(BaseModel):
     filename: str
     content: str  # base64 编码的文件字节
+
+
+class DbRequest(BaseModel):
+    path: str
 
 
 # ──────────────────────── 条目 ────────────────────────
@@ -214,6 +226,36 @@ def api_export(fmt: str = "txt"):
                     media_type="text/plain; charset=utf-8")
 
 
+# ──────────────────────── 数据库 ────────────────────────
+
+@app.get("/api/db")
+def api_db(directory: str = ""):
+    """当前数据库状态；`directory` 给定时返回该目录下的 .db 文件列表（不切换）。"""
+    target_dir = directory.strip() or str(db.DB_PATH.parent)
+    return {
+        "path": str(db.DB_PATH),
+        "directory": str(db.DB_PATH.parent),
+        "name": db.DB_PATH.name,
+        "files": db.list_dbs(target_dir),
+        "listed_directory": target_dir,
+    }
+
+
+@app.post("/api/db")
+def api_db_set(req: DbRequest):
+    """切换数据库：path 为目录 → 该目录/library.db；为 .db 文件 → 直接使用。"""
+    if not req.path.strip():
+        raise HTTPException(400, "缺少数据库路径")
+    path = db.set_db(req.path.strip())
+    return {
+        "path": str(path),
+        "directory": str(path.parent),
+        "name": path.name,
+        "files": db.list_dbs(path.parent),
+        "listed_directory": str(path.parent),
+    }
+
+
 # ──────────────────────── 全局代理 ────────────────────────
 
 @app.get("/api/proxy")
@@ -237,28 +279,51 @@ def api_proxy_check():
 
 # ──────────────────────── 图片代理 ────────────────────────
 
-def _fetch_image_bytes(src: str, proxy_url: str | None, timeout: int = 15) -> tuple[bytes, str] | None:
-    """用 urllib 抓取图片字节（带 Cookie 注入）；失败返回 None。"""
+def _fetch_image_bytes(src: str, proxy_url: str | None, timeout: int = 15,
+                       referer: str = "") -> tuple[bytes, str] | None:
+    """抓取图片字节（带 Cookie 注入 + 防盗链 Referer）；失败返回 None。
+
+    优先用 curl_cffi 的 TLS 指纹抓取（绕过 Cloudflare 等反爬），失败回退 urllib。
+    """
+    # 防盗链通常校验 Referer 是否来自站点页面（而非图片自身），缺省用图片同源兜底
+    if not referer:
+        p = urlparse(src)
+        referer = f"{p.scheme}://{p.netloc}/"
+    headers = {"Referer": referer}
+    cookie = cookie_ctl.get_cookie_header(src)
+    if cookie:
+        headers["Cookie"] = cookie
+
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": src,  # 防盗链兜底
-        }
-        cookie = cookie_ctl.get_cookie_header(src)
-        if cookie:
-            headers["Cookie"] = cookie
-        req = urllib.request.Request(src, headers=headers)
+        from curl_cffi import requests as cf
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        resp = cf.get(src, headers=headers, proxies=proxies, timeout=timeout,
+                      impersonate="chrome", allow_redirects=True)
+        if resp.status_code < 400:
+            ctype = resp.headers.get("Content-Type", "application/octet-stream")
+            return resp.content, ctype
+        logger.warning(
+            f"curl_cffi 抓图 HTTP {resp.status_code}：{src}"
+            f"（server={resp.headers.get('server')} cf-ray={resp.headers.get('cf-ray')}），回退 urllib"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"curl_cffi 抓图异常：{src}（{type(exc).__name__}: {exc}），回退 urllib")
+
+    try:
+        req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0", **headers})
         opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url})) if proxy_url else build_opener()
         with opener.open(req, timeout=timeout) as r:
             return r.read(), r.headers.get("Content-Type", "application/octet-stream")
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"urllib 抓图失败：{src}（{type(exc).__name__}: {exc}）")
         return None
 
 
 @app.get("/api/img")
-def api_img(src: str):
+def api_img(src: str, referer: str = ""):
     """服务端代抓图片（封面跨域/防盗链兜底），走**全局代理**，并**落盘缓存**。
 
+    - `referer`：来源页面地址，用于防盗链校验（缺省回退图片同源）。
     - 命中本地缓存 → 直接返回（避免重复抓取同一张图）。
     - 缓存未命中 → 抓取 → 写缓存 → 返回。
     - 代理端口漂移导致连接失败时，强制重新探测代理再重试一次。
@@ -274,11 +339,11 @@ def api_img(src: str):
 
     # ② 缓存未命中 → 抓取
     proxy_url = proxy.resolve() or None
-    got = _fetch_image_bytes(src, proxy_url)
+    got = _fetch_image_bytes(src, proxy_url, referer=referer)
     if got is None and proxy_url:
-        # 代理可能失效（端口漂移/连接拒绝），强制重新探测后再试一次
+        # 代理可能失效（端口漂移/连接拒绝），强制重新探测代理再试一次
         proxy_url = proxy.resolve(force=True) or None
-        got = _fetch_image_bytes(src, proxy_url)
+        got = _fetch_image_bytes(src, proxy_url, referer=referer)
     if got is None:
         raise HTTPException(404, "图片抓取失败（源站反爬或代理不可用）")
 

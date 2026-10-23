@@ -133,10 +133,13 @@ def resolve(force: bool = False) -> str:
         # 自动探测本机常见代理端口（自动检测）
         candidates = detect_local_ports()
         if candidates:
-            _current = candidates[0]
+            new_proxy = candidates[0]
+            changed = new_proxy != _current
+            _current = new_proxy
             _last_check_result = _current
             _last_check_time = now
-            logger.info(f"{'已自动切换到' if _configured else '自动检测到'}可用代理：{_current}")
+            if changed:
+                logger.info(f"{'已自动切换到' if _configured else '自动检测到'}可用代理：{_current}")
             return _current
 
         _current = ""

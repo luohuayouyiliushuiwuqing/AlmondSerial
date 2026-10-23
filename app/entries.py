@@ -8,7 +8,7 @@ import sqlite3
 from urllib.parse import urlparse
 
 from . import db, detail_proxy
-from .attributes import classify
+from .attributes import classify, field_links
 from .codes import extract_code, normalize_code
 
 
@@ -34,6 +34,7 @@ def _links_for(conn: sqlite3.Connection, code: str) -> list[str]:
 
 
 def _row_to_entry(row: sqlite3.Row, links: list[str], tags: list[dict]) -> dict:
+    details = json.loads(row["details"] or "[]")
     return {
         "code": row["code"], "title": row["title"], "cover": row["cover"],
         "release_date": row["release_date"], "maker": row["maker"],
@@ -41,7 +42,8 @@ def _row_to_entry(row: sqlite3.Row, links: list[str], tags: list[dict]) -> dict:
         "series": row["series"], "duration": row["duration"], "rating": row["rating"],
         "actors": json.loads(row["actors"] or "[]"),
         "genres": json.loads(row["genres"] or "[]"),
-        "details": json.loads(row["details"] or "[]"),
+        "details": details,
+        "field_links": field_links(details),
         "fetched": bool(row["fetched"]),
         "created_at": row["created_at"], "updated_at": row["updated_at"],
         "links": links, "tags": tags,

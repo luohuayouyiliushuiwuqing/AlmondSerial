@@ -50,7 +50,10 @@ async function loadEntries() {
 }
 
 function coverUrl(e) {
-  return e.cover ? `/api/img?src=${encodeURIComponent(e.cover)}` : "";
+  if (!e.cover) return "";
+  const q = `src=${encodeURIComponent(e.cover)}`;
+  const ref = e.links && e.links.length ? `&referer=${encodeURIComponent(e.links[0])}` : "";
+  return `/api/img?${q}${ref}`;
 }
 
 function renderGrid() {
@@ -133,7 +136,7 @@ function renderCard(e) {
 
 // ──────────────────────── 详情弹层 ────────────────────────
 
-function fieldRow(label, value) {
+function fieldRow(label, value, href) {
   const row = document.createElement("div");
   row.className = "field-row";
   const lab = document.createElement("span");
@@ -141,7 +144,17 @@ function fieldRow(label, value) {
   lab.textContent = label;
   const val = document.createElement("span");
   val.className = "field-value";
-  val.textContent = value || "—";
+  if (href && value) {
+    const a = document.createElement("a");
+    a.className = "field-link";
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = value;
+    val.appendChild(a);
+  } else {
+    val.textContent = value || "—";
+  }
   row.append(lab, val);
   return row;
 }
@@ -156,6 +169,27 @@ function chipList(items, cls = "chip") {
     wrap.appendChild(c);
   }
   return wrap;
+}
+
+function linkChipList(links, cls = "chip") {
+  const wrap = document.createElement("div");
+  wrap.className = "chip-list";
+  for (const l of links) {
+    const a = document.createElement("a");
+    a.className = cls + " chip-link";
+    a.href = l.href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = l.text || l.href;
+    a.title = l.href;
+    wrap.appendChild(a);
+  }
+  return wrap;
+}
+
+function firstLink(e, field) {
+  const ls = e.field_links && e.field_links[field];
+  return ls && ls.length ? ls[0].href : "";
 }
 
 async function openDetail(code) {
@@ -196,9 +230,9 @@ function renderDetail(e) {
   props.className = "detail-props";
   props.append(
     fieldRow("发行日期", e.release_date),
-    fieldRow("片商", e.maker),
-    fieldRow("导演", e.director),
-    fieldRow("标籤", e.label),
+    fieldRow("片商", e.maker, firstLink(e, "maker")),
+    fieldRow("导演", e.director, firstLink(e, "director")),
+    fieldRow("标籤", e.label, firstLink(e, "label")),
     fieldRow("系列", e.series),
     fieldRow("时长", e.duration),
     fieldRow("评分", e.rating),
@@ -210,12 +244,14 @@ function renderDetail(e) {
   const actors = document.createElement("div");
   actors.className = "detail-section";
   actors.innerHTML = "<h3>演员</h3>";
-  actors.appendChild(chipList(e.actors.length ? e.actors : ["—"]));
+  const actorLinks = (e.field_links && e.field_links.actors) || [];
+  actors.appendChild(actorLinks.length ? linkChipList(actorLinks) : chipList(e.actors.length ? e.actors : ["—"]));
 
   const genres = document.createElement("div");
   genres.className = "detail-section";
   genres.innerHTML = "<h3>类型</h3>";
-  genres.appendChild(chipList(e.genres.length ? e.genres : ["—"]));
+  const genreLinks = (e.field_links && e.field_links.genres) || [];
+  genres.appendChild(genreLinks.length ? linkChipList(genreLinks) : chipList(e.genres.length ? e.genres : ["—"]));
 
   const links = document.createElement("div");
   links.className = "detail-section";
@@ -284,7 +320,21 @@ function renderDetail(e) {
     const td1 = document.createElement("td");
     td1.textContent = d.label;
     const td2 = document.createElement("td");
-    td2.textContent = d.value || d.datetime || (d.links && d.links[0] ? d.links[0].href : "");
+    const dlinks = (d.links || []).filter((l) => l && l.href);
+    if (dlinks.length) {
+      dlinks.forEach((l, i) => {
+        const a = document.createElement("a");
+        a.className = "raw-link";
+        a.href = l.href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = l.text || l.href;
+        td2.appendChild(a);
+        if (i < dlinks.length - 1) td2.appendChild(document.createTextNode("、"));
+      });
+    } else {
+      td2.textContent = d.value || d.datetime || "";
+    }
     tr.append(td1, td2);
     rawTable.appendChild(tr);
   }
@@ -726,6 +776,116 @@ async function openProxyPanel() {
   modal.hidden = false;
 }
 
+// ──────────────────────── 数据库切换面板 ────────────────────────
+
+async function reloadAfterSwitch() {
+  state.q = "";
+  const search = $("#search-input");
+  if (search) search.value = "";
+  const [tags] = await Promise.all([api("/api/tags"), loadEntries()]);
+  state.tags = tags.tags;
+}
+
+async function openDbPanel(directory = "") {
+  const q = directory ? `?directory=${encodeURIComponent(directory)}` : "";
+  const st = await api(`/api/db${q}`);
+  modalBody.innerHTML = "";
+
+  const h = document.createElement("h2");
+  h.textContent = "数据库";
+
+  const current = document.createElement("div");
+  current.className = "db-current";
+  current.textContent = `当前数据库：${st.path}`;
+
+  const form = document.createElement("form");
+  form.className = "db-form";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = st.listed_directory;
+  input.placeholder = "数据库目录（如 D:\\data）或完整 .db 文件路径";
+  const browseBtn = document.createElement("button");
+  browseBtn.type = "button";
+  browseBtn.className = "btn";
+  browseBtn.textContent = "浏览目录";
+  const switchBtn = document.createElement("button");
+  switchBtn.type = "submit";
+  switchBtn.className = "btn btn-primary";
+  switchBtn.textContent = "切换";
+  form.append(input, browseBtn, switchBtn);
+
+  const listWrap = document.createElement("div");
+  listWrap.className = "db-list-wrap";
+  const listTitle = document.createElement("div");
+  listTitle.className = "db-list-title";
+  listTitle.textContent = `目录：${st.listed_directory}`;
+  const list = document.createElement("div");
+  list.className = "db-list";
+  if (!st.files.length) {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "（该目录下暂无 .db 文件）";
+    list.appendChild(none);
+  }
+  for (const f of st.files) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "db-item" + (f === st.name ? " active" : "");
+    row.textContent = f + (f === st.name ? "（当前）" : "");
+    row.addEventListener("click", async () => {
+      row.disabled = true;
+      try {
+        await api("/api/db", { method: "POST", body: { path: `${st.listed_directory}/${f}` } });
+        toast("已切换数据库：" + f);
+        closeModal();
+        await reloadAfterSwitch();
+      } catch (err) {
+        toast("切换失败：" + err.message);
+        row.disabled = false;
+      }
+    });
+    list.appendChild(row);
+  }
+  listWrap.append(listTitle, list);
+
+  const useDefault = document.createElement("button");
+  useDefault.type = "button";
+  useDefault.className = "btn";
+  useDefault.textContent = "使用此目录的 library.db（无则新建）";
+  useDefault.addEventListener("click", async () => {
+    useDefault.disabled = true;
+    try {
+      await api("/api/db", { method: "POST", body: { path: st.listed_directory } });
+      toast("已切换到 library.db");
+      closeModal();
+      await reloadAfterSwitch();
+    } catch (err) {
+      toast("切换失败：" + err.message);
+      useDefault.disabled = false;
+    }
+  });
+
+  browseBtn.addEventListener("click", () => openDbPanel(input.value.trim()));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    switchBtn.disabled = true;
+    switchBtn.textContent = "切换中…";
+    try {
+      await api("/api/db", { method: "POST", body: { path: input.value.trim() } });
+      toast("已切换数据库");
+      closeModal();
+      await reloadAfterSwitch();
+    } catch (err) {
+      toast("切换失败：" + err.message);
+      switchBtn.disabled = false;
+      switchBtn.textContent = "切换";
+    }
+  });
+
+  modalBody.append(h, current, form, listWrap, useDefault);
+  modal.hidden = false;
+}
+
 // ──────────────────────── 事件绑定 ────────────────────────
 
 $("#import-form").addEventListener("submit", (ev) => {
@@ -745,6 +905,7 @@ $("#search-input").addEventListener("input", (ev) => {
 });
 
 $("#export-btn").addEventListener("click", exportTxt);
+$("#db-btn").addEventListener("click", () => openDbPanel());
 $("#proxy-btn").addEventListener("click", openProxyPanel);
 $("#file-import-btn").addEventListener("click", () => $("#file-input").click());
 $("#file-input").addEventListener("change", async (ev) => {

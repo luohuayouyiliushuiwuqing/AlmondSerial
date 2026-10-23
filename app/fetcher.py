@@ -30,7 +30,11 @@ def extract_metadata(response, base_url: str) -> dict:
 
     thumbnail = (
         attr('meta[property="og:image"]::attr(content)')
+        or attr('meta[property="og:image:url"]::attr(content)')
+        or attr('meta[property="og:image:secure_url"]::attr(content)')
         or attr('meta[name="twitter:image"]::attr(content)')
+        or attr('meta[name="twitter:image:src"]::attr(content)')
+        or attr('link[rel="image_src"]::attr(href)')
     )
     favicon = attr('link[rel*="icon"]::attr(href)')
 

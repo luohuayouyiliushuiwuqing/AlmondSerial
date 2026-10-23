@@ -77,6 +77,31 @@ def _opt(name: str, default: str) -> str:
     return sys.argv[idx + 1] if idx + 1 < len(sys.argv) else default
 
 
+def get_lan_ips() -> list[str]:
+    """探测本机局域网 IPv4 地址（排除回环 127.* 与 link-local 169.254.*）。
+
+    优先用 UDP connect 取默认出口网卡地址（不真正发包），再补充本机名解析到的
+    其他网卡 IP，供局域网内的设备访问时参考。
+    """
+    ips: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if not ip.startswith(("127.", "169.254.")):
+                ips.append(ip)
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips and not ip.startswith(("127.", "169.254.")):
+                ips.append(ip)
+    except OSError:
+        pass
+    return ips
+
+
 def main() -> None:
     host = _opt("--host", HOST)
     port = int(_opt("--port", str(START_PORT)))
@@ -103,8 +128,16 @@ def main() -> None:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
     import uvicorn
-    print(f"启动服务：http://{host}:{port}/")
-    uvicorn.run("app.main:app", host=host, port=port, log_level="info")
+    print(f"本机访问：http://127.0.0.1:{port}/")
+    if host in ("0.0.0.0", "::"):
+        lan_ips = get_lan_ips()
+        if lan_ips:
+            print("局域网访问（供其他设备使用）：")
+            for ip in lan_ips:
+                print(f"  http://{ip}:{port}/")
+        else:
+            print("未检测到局域网地址，请检查网卡/网络配置。")
+    uvicorn.run("app.main:app", host=host, port=port, log_level="info", access_log=False)
 
 
 if __name__ == "__main__":

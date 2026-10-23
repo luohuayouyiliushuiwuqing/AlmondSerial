@@ -145,3 +145,34 @@ def classify(details: list[dict]) -> dict:
                 texts = _link_texts(links)
                 out[field] = value or (texts[0] if texts else "")
     return out
+
+
+def field_links(details: list[dict]) -> dict[str, list[dict]]:
+    """从详情行提取「类型化字段名 → 链接列表」，供前端把文字渲染成可跳转链接。
+
+    链接保留 text（显示）+ href（跳转）；标签文字未命中时用链接 href 作用通配兜底。
+    """
+    out: dict[str, list[dict]] = {}
+    for row in details or []:
+        if not isinstance(row, dict):
+            continue
+        label = _norm_label(row.get("label") or "")
+        field = _ALIAS_MAP.get(label)
+        if not field:
+            for l in row.get("links") or []:
+                if not isinstance(l, dict):
+                    continue
+                kind = link_kind(l.get("href"))
+                if kind:
+                    field = _KIND_TO_FIELD.get(kind)
+                    break
+        if not field:
+            continue
+        links = [
+            {"text": (l.get("text") or "").strip(), "href": l.get("href") or ""}
+            for l in row.get("links") or []
+            if isinstance(l, dict) and l.get("href")
+        ]
+        if links and field not in out:
+            out[field] = links
+    return out
