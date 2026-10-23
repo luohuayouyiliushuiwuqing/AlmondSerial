@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>动漫管理器</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▶</span>
+      <h1>动漫管理器</h1>
+    </div>
+    <form id="import-form" class="import-form">
+      <input id="import-input" type="text" placeholder="粘贴链接导入番号，回车确认（支持多条，逗号/换行分隔）" autocomplete="off" />
+      <button type="submit" class="btn btn-primary">导入</button>
+    </form>
+    <div class="toolbar">
+      <input id="search-input" type="search" placeholder="搜索番号 / 标题 / 演员 / 片商…" autocomplete="off" />
+      <button id="file-import-btn" class="btn">导入文件</button>
+      <button id="proxy-btn" class="btn">代理</button>
+      <button id="export-btn" class="btn">导出 TXT</button>
+    </div>
+    <input id="file-input" type="file" accept=".txt,.csv,.html,.htm" hidden />
+  </header>
+
+  <main id="main" class="main">
+    <div class="stats"><span id="stats-text">加载中…</span></div>
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty" hidden>
+      <p>还没有条目</p>
+      <p class="hint">在上方粘贴包含番号的链接即可导入</p>
+    </div>
+  </main>
+
+  <div id="modal" class="modal" hidden>
+    <div class="modal-mask" data-close></div>
+    <div class="modal-card">
+      <button class="modal-close" data-close>×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

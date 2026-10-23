@@ -1,0 +1,5 @@
+# 后端依赖（运行环境已装齐，版本对齐 xingren conda 环境）
+fastapi
+uvicorn
+loguru
+scrapling
