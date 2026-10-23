@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>番号库抓取</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="pop">
+    <header class="head">
+      <span class="logo">▶</span>
+      <h1>番号库抓取</h1>
+    </header>
+
+    <label class="field">
+      <span class="field-label">后端地址</span>
+      <input id="base" type="text" placeholder="http://127.0.0.1:8000" autocomplete="off" spellcheck="false" />
+    </label>
+
+    <button id="capture" class="btn primary">抓取当前页</button>
+
+    <div id="status" class="status" hidden></div>
+
+    <div id="result" class="result" hidden>
+      <img id="thumb" alt="" />
+      <div class="meta">
+        <div id="code" class="code"></div>
+        <div id="title" class="title"></div>
+      </div>
+    </div>
+
+    <p class="hint">点击后读取当前标签页的标题 / 封面图 / 关键信息，直接存入后端。</p>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

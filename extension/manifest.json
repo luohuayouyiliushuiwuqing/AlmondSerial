@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "番号库抓取插件",
+  "version": "1.0.0",
+  "description": "一键抓取当前网页的封面图与关键信息，直接保存到番号库后端。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "抓取到番号库",
+    "default_popup": "popup.html"
+  }
+}
