@@ -1,0 +1,22 @@
+# ── Python 缓存 / 构建 ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ── 运行时数据（SQLite 数据库等，本地私有，不入库）──
+data/
+
+# ── 日志 / 临时 ──
+*.log
+nohup.out
+.pytest_cache/
+
+# ── IDE / 编辑器 ──
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
