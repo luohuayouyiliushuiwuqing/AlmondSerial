@@ -1,5 +1,6 @@
-"""actresses：演员名单、搜索、单个演员的作品列表（纯逻辑、无网络）。"""
+"""actresses：演员名单、自动同步、作品列表、类型标签（纯逻辑、无网络）。"""
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -102,6 +103,118 @@ class TestGet(Base):
         data = actresses.get_actress(new_id)
         self.assertEqual(data["total"], 0)
         self.assertEqual(data["entries"], [])
+
+
+class TestAutoSync(Base):
+    """条目一落库就自动进演员层，不用再手动跑 build_actresses.py。"""
+
+    def test_ingest_creates_links(self):
+        entries.ingest_fetched({"url": "https://a.com/ABP-100", "title": "甲",
+                                "success": True,
+                                "details": [_detail("演员", "苍井空, 三上悠亜")]})
+        res = actresses.list_actresses()
+        self.assertTrue(res["ready"])
+        self.assertEqual(res["total"], 2)
+        ids = {a["name"]: a["id"] for a in res["actresses"]}
+        data = actresses.get_actress(ids["苍井空"])
+        self.assertEqual([e["code"] for e in data["entries"]], ["ABP-100"])
+
+    def test_ingest_is_idempotent(self):
+        meta = {"url": "https://a.com/ABP-100", "title": "甲", "success": True,
+                "details": [_detail("演员", "苍井空")]}
+        entries.ingest_fetched(meta)
+        entries.ingest_fetched(meta)
+        with db.conn() as conn:
+            n = conn.execute("SELECT count(*) FROM entry_actress").fetchone()[0]
+        self.assertEqual(n, 1)
+
+    def test_refetch_drops_dropped_actress(self):
+        entries.ingest_fetched({"url": "https://a.com/ABP-100", "success": True,
+                                "details": [_detail("演员", "苍井空, 三上悠亜")]})
+        entries.ingest_fetched({"url": "https://a.com/ABP-100", "success": True,
+                                "details": [_detail("演员", "苍井空")]})
+        res = actresses.list_actresses()
+        self.assertEqual([a["name"] for a in res["actresses"]], ["苍井空"])
+
+    def test_delete_entry_clears_links(self):
+        entries.ingest_fetched({"url": "https://a.com/ABP-100", "success": True,
+                                "details": [_detail("演员", "苍井空")]})
+        entries.delete_entry("ABP-100")
+        with db.conn() as conn:
+            n = conn.execute("SELECT count(*) FROM entry_actress").fetchone()[0]
+        self.assertEqual(n, 0)
+
+    def test_manual_actors_used_when_details_have_none(self):
+        entries.ingest_fetched({"url": "https://a.com/ABP-100", "title": "甲",
+                                "success": True, "details": []})
+        entries.update_entry("ABP-100", {"actors": ["苍井空"]})
+        res = actresses.list_actresses()
+        self.assertEqual([a["name"] for a in res["actresses"]], ["苍井空"])
+
+    def test_backfill_old_db_on_first_visit(self):
+        """老库：条目已经在、演员表还是空的 → 第一次访问演员视图时补一次全量。"""
+        entries.import_links(["https://a.com/ABP-100"])
+        with db.conn() as conn:
+            conn.execute(
+                "UPDATE entries SET details = ? WHERE code = 'ABP-100'",
+                (json.dumps([_detail("演员", "苍井空")], ensure_ascii=False),))
+            conn.execute("DELETE FROM entry_actress")
+            conn.execute("DELETE FROM actresses")
+        res = actresses.list_actresses()
+        self.assertEqual([a["name"] for a in res["actresses"]], ["苍井空"])
+
+
+class TestTags(Base):
+    """演员类型：系统只按作品算频次参考，写入全靠用户点选。"""
+
+    def setUp(self):
+        super().setUp()
+        for code, genres in [("ABP-100", "巨乳, 单体"), ("SSIS-200", "巨乳"),
+                             ("SSIS-300", "企画")]:
+            entries.ingest_fetched({"url": f"https://a.com/{code}", "success": True,
+                                    "details": [_detail("演员", "苍井空"),
+                                                _detail("类型", genres)]})
+        self.aid = actresses.list_actresses()["actresses"][0]["id"]
+
+    def test_suggestions_sorted_by_frequency(self):
+        s = actresses.suggest_tags(self.aid)
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["items"][0], {"name": "巨乳", "count": 2})
+        self.assertEqual({i["name"] for i in s["items"]}, {"巨乳", "单体", "企画"})
+
+    def test_suggestions_empty_for_actress_without_entries(self):
+        with db.conn() as conn:
+            conn.execute("INSERT INTO actresses (name) VALUES ('孤零零')")
+            new_id = conn.execute(
+                "SELECT id FROM actresses WHERE name='孤零零'").fetchone()[0]
+        self.assertEqual(actresses.suggest_tags(new_id), {"total": 0, "items": []})
+
+    def test_nothing_picked_by_default(self):
+        self.assertEqual(actresses.get_actress(self.aid)["tags"], [])
+
+    def test_add_and_remove(self):
+        res = actresses.add_tag(self.aid, "巨乳")
+        self.assertEqual([t["name"] for t in res["tags"]], ["巨乳"])
+        self.assertEqual([t["name"] for t in actresses.get_actress(self.aid)["tags"]],
+                         ["巨乳"])
+        tag_id = res["tags"][0]["id"]
+        self.assertEqual(actresses.remove_tag(self.aid, tag_id)["tags"], [])
+
+    def test_add_twice_keeps_one_row(self):
+        actresses.add_tag(self.aid, "巨乳")
+        actresses.add_tag(self.aid, "巨乳")
+        with db.conn() as conn:
+            n = conn.execute("SELECT count(*) FROM actress_tag_map").fetchone()[0]
+        self.assertEqual(n, 1)
+
+    def test_add_rejects_blank_and_unknown_actress(self):
+        self.assertIsNone(actresses.add_tag(self.aid, "   "))
+        self.assertIsNone(actresses.add_tag(999999, "巨乳"))
+
+    def test_suggestions_still_list_picked_name(self):
+        """参考列表本身不过滤已选（口径一致），由前端把已选的从参考里去掉。"""
+        actresses.add_tag(self.aid, "巨乳")
+        self.assertIn("巨乳", [i["name"] for i in actresses.suggest_tags(self.aid)["items"]])
 
 
 if __name__ == "__main__":

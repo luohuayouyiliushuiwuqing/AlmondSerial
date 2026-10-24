@@ -14,6 +14,7 @@ const modalBody = $("#modal-body");
 const toastEl = $("#toast");
 const actressGrid = $("#actress-grid");
 const actressEntries = $("#actress-entries");
+const actressTags = $("#actress-tags");
 const actressName = $("#actress-name");
 const actressCount = $("#actress-count");
 const actressBack = $("#actress-back");
@@ -648,6 +649,7 @@ function renderActressCard(a) {
   const card = document.createElement("button");
   card.type = "button";
   card.className = "actress-card";
+  card.title = a.name;
 
   const avatar = document.createElement("span");
   avatar.className = "actress-avatar";
@@ -678,7 +680,9 @@ function firstGlyph(name) {
 
 async function loadActressPage(id) {
   actressName.textContent = "";
+  actressName.title = "";
   actressCount.textContent = "";
+  actressTags.textContent = "";
   actressEntries.textContent = "";
   actressEntries.appendChild(hintLine("加载中…"));
 
@@ -693,13 +697,99 @@ async function loadActressPage(id) {
   if (state.view !== "actress") return;
 
   actressName.textContent = data.name;
+  actressName.title = data.name;
   actressCount.textContent = `${data.total} 部作品`;
+  renderActressTags(id, data);
   actressEntries.textContent = "";
   if (!data.entries.length) {
     actressEntries.appendChild(hintLine("这位演员名下还没有作品。"));
     return;
   }
   for (const e of data.entries) actressEntries.appendChild(renderCard(e));
+}
+
+// 演员类型：上面一行是已选的（点掉即移除），下面一行按「几部作品带这个类型」给参考
+// （点一下即写入）。系统只负责算参考，具体给谁打哪个类型由人指定。
+function renderActressTags(id, data) {
+  const picked = data.tags || [];
+  const suggest = data.suggestions || { total: 0, items: [] };
+  const pickedNames = new Set(picked.map((t) => t.name));
+
+  actressTags.textContent = "";
+
+  const pickedRow = tagRow("类型");
+  if (!picked.length) {
+    pickedRow.body.appendChild(tagHint("还没指定，从下面挑"));
+  } else {
+    for (const t of picked) {
+      pickedRow.body.appendChild(tagChip(t.name, "on",
+        () => updateActressTags(id, "DELETE", t.id)));
+    }
+  }
+  actressTags.appendChild(pickedRow.el);
+
+  const rest = suggest.items.filter((it) => !pickedNames.has(it.name));
+  const suggestRow = tagRow("参考");
+  if (!suggest.usable) {
+    suggestRow.body.appendChild(tagHint(
+      suggest.total ? "这些作品的类型没抓到" : "还没有作品"));
+  } else if (!suggest.items.length) {
+    suggestRow.body.appendChild(tagHint("没有哪种类型占到 2/3，先不推荐"));
+  } else if (!rest.length) {
+    suggestRow.body.appendChild(tagHint("参考里的类型都已选上"));
+  } else {
+    for (const it of rest) {
+      suggestRow.body.appendChild(tagChip(`${it.name} ${it.count}/${suggest.total}`,
+        "", () => updateActressTags(id, "POST", it.name)));
+    }
+  }
+  actressTags.appendChild(suggestRow.el);
+}
+
+function tagRow(label) {
+  const el = document.createElement("div");
+  el.className = "tag-row";
+  const lab = document.createElement("span");
+  lab.className = "tag-row-label";
+  lab.textContent = label;
+  const body = document.createElement("div");
+  body.className = "tag-row-body";
+  el.append(lab, body);
+  return { el, body };
+}
+
+function tagChip(text, cls, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "tag-chip" + (cls ? " " + cls : "");
+  b.textContent = text;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await onClick();
+    } finally {
+      b.disabled = false;
+    }
+  });
+  return b;
+}
+
+function tagHint(text) {
+  const s = document.createElement("span");
+  s.className = "tag-hint";
+  s.textContent = text;
+  return s;
+}
+
+async function updateActressTags(id, method, arg) {
+  try {
+    const data = method === "POST"
+      ? await api(`/api/actress/${id}/tags`, { method: "POST", body: { name: arg } })
+      : await api(`/api/actress/${id}/tags/${arg}`, { method: "DELETE" });
+    renderActressTags(id, data);
+  } catch (e) {
+    toast("操作失败：" + e.message);
+  }
 }
 
 function hintLine(text) {

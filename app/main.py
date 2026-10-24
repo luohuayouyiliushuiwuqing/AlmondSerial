@@ -192,11 +192,28 @@ def api_actresses(q: str = "", limit: int = 200, offset: int = 0):
 
 @app.get("/api/actress/{actress_id}")
 def api_actress(actress_id: int):
-    """单个演员 + 他/她的全部作品（关联自动推导，只读）。"""
+    """单个演员 + 他/她的全部作品（关联自动推导，只读）+ 已选类型 + 类型参考。"""
     a = actresses.get_actress(actress_id)
     if a is None:
         raise HTTPException(404, "演员不存在或数据未初始化")
     return a
+
+
+@app.post("/api/actress/{actress_id}/tags")
+def api_actress_add_tag(actress_id: int, req: TagRequest):
+    """给演员加一个类型；类型由人指定，系统只按作品给频次参考。"""
+    res = actresses.add_tag(actress_id, req.name)
+    if res is None:
+        raise HTTPException(400, "演员不存在或类型名为空")
+    return res
+
+
+@app.delete("/api/actress/{actress_id}/tags/{tag_id}")
+def api_actress_remove_tag(actress_id: int, tag_id: int):
+    res = actresses.remove_tag(actress_id, tag_id)
+    if res is None:
+        raise HTTPException(404, "演员不存在")
+    return res
 
 
 # ──────────────────────── 抓取 ────────────────────────

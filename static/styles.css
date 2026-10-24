@@ -525,6 +525,33 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
 }
 .actress-count { flex: none; font-size: 12px; color: var(--text-dim); }
 
+/* 演员类型：已选一行 + 参考一行；参考里的数字是「几部作品带这个类型」 */
+.actress-tags { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.tag-row { display: flex; align-items: flex-start; gap: 10px; }
+/* 两行的标签取同一固定宽度，chip 才对得齐 */
+.tag-row-label { flex: none; width: 2.4em; padding-top: 5px; font-size: 12px; color: var(--text-dim); }
+.tag-row-body { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.tag-chip {
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.tag-chip:hover { color: var(--text); border-color: var(--accent); }
+.tag-chip:disabled { opacity: 0.5; cursor: default; }
+.tag-chip.on {
+  background: rgba(108, 140, 255, 0.15);
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.tag-hint { padding-top: 5px; font-size: 12px; color: var(--text-dim); }
+
 /* ══════════════════════ 移动端 / 窄屏 ══════════════════════ */
 @media (max-width: 720px) {
   /* 竖滑保留、横划不响应 —— 极窄屏上即使有元素超宽也不会左右滑动 */
@@ -723,8 +750,13 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
   .actress-card:hover { transform: none; box-shadow: none; border-color: var(--border); }
   .actress-card:active { border-color: var(--accent); }
   .actress-avatar { width: 32px; height: 32px; font-size: 13px; }
-  .actress-head { margin-bottom: 12px; gap: 8px; }
+  .actress-head { margin-bottom: 10px; gap: 8px; }
   .actress-head h2 { font-size: 17px; }
+  .actress-tags { gap: 6px; margin-bottom: 12px; }
+  .tag-row { gap: 8px; }
+  .tag-row-label { padding-top: 4px; font-size: 11px; }
+  .tag-chip { padding: 4px 10px; font-size: 11px; }
+  .tag-hint { padding-top: 4px; font-size: 11px; }
 
   /* ── 长文本防护：任何元素都不许撑宽视口 ── */
   .card-code, .card-title, .detail-title, .detail-info h2 { overflow-wrap: anywhere; }

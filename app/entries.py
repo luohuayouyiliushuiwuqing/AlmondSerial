@@ -251,6 +251,9 @@ def ingest_fetched(meta: dict) -> dict | None:
                  json.dumps(genres, ensure_ascii=False),
                  json.dumps(details, ensure_ascii=False), code),
             )
+        # 详情一落库就把演员关联同步进演员层，新抓的条目立刻出现在演员列表里
+        from . import actresses  # 延迟导入：actresses 依赖本模块
+        actresses.sync_entry(conn, code)
     return get_entry(code)
 
 
@@ -284,6 +287,10 @@ def update_entry(code: str, fields: dict) -> dict | None:
         sets.append("updated_at = datetime('now','localtime')")
         params.append(code)
         conn.execute(f"UPDATE entries SET {', '.join(sets)} WHERE code = ?", params)
+        if "actors" in fields:
+            # 详情没变时光看 details 解析不到手改的演员，这里补一次同步
+            from . import actresses
+            actresses.sync_entry(conn, code)
     return get_entry(code)
 
 
@@ -295,6 +302,8 @@ def delete_entry(code: str) -> bool:
         conn.execute("DELETE FROM entry_links WHERE code = ?", (code,))
         conn.execute("DELETE FROM entry_tags WHERE code = ?", (code,))
         cur = conn.execute("DELETE FROM entries WHERE code = ?", (code,))
+        from . import actresses
+        actresses.sync_entry(conn, code)  # 条目已删 → 顺手清掉它留下的演员关联
         return cur.rowcount > 0
 
 
@@ -381,6 +390,8 @@ def enrich_from_proxy(code: str, data: dict) -> dict | None:
             sets.append("updated_at = datetime('now','localtime')")
             params.append(code)
             conn.execute(f"UPDATE entries SET {', '.join(sets)} WHERE code = ?", params)
+            from . import actresses
+            actresses.sync_entry(conn, code)
     return get_entry(code)
 
 
