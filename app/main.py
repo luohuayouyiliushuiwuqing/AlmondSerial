@@ -273,7 +273,11 @@ def api_capture(req: CaptureRequest):
     e = entries.ingest_fetched(meta)
     if e is None:
         return {"ok": True, "unrecognized": True}
-    if req.image_base64 and e.get("cover"):
+    # 插件带来的封面字节只在「这张图正好是条目当前用的封面、且本地还没缓存」时落盘。
+    # 否则会发生两种覆盖：用插件抓的图盖掉库里原有的封面字节；或封面合并后仍是旧
+    # URL，却把插件这张新图的字节写到旧 URL 的缓存键下。
+    if req.image_base64 and e.get("cover") and thumbnail and e["cover"] == thumbnail \
+            and not imgcache.has(e["cover"]):
         try:
             data = base64.b64decode(req.image_base64)
             if data:

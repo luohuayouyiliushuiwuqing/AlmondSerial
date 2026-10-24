@@ -16,9 +16,11 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         db.DB_PATH = self.dir / "test.db"
+        self._cache_dir = imgcache.CACHE_DIR
         imgcache.CACHE_DIR = self.dir / "img"
 
     def tearDown(self):
+        imgcache.CACHE_DIR = self._cache_dir
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -45,6 +47,50 @@ class TestCapture(Base):
         ))
         self.assertTrue(imgcache.has("https://img.example/a.jpg"))
         self.assertEqual(res["entry"]["cover_state"], 2)  # 已抓图
+
+    def test_recapture_does_not_overwrite_cover(self):
+        """同一条目再次从插件抓取：封面 URL 和已缓存的图片字节都必须保持原样。"""
+        api_capture(CaptureRequest(
+            url="https://a.com/detail/ABP-123", title="T",
+            thumbnail="https://img.example/a.jpg",
+            image_base64=base64.b64encode(b"OLD").decode(), image_type="image/jpeg",
+        ))
+        res = api_capture(CaptureRequest(
+            url="https://mirror.example/detail/ABP-123", title="T2",
+            thumbnail="https://mirror.example/b.jpg",
+            image_base64=base64.b64encode(b"NEW").decode(), image_type="image/jpeg",
+        ))
+        self.assertEqual(res["entry"]["cover"], "https://img.example/a.jpg")
+        self.assertEqual(imgcache.get("https://img.example/a.jpg")[0], b"OLD")
+        self.assertFalse(imgcache.has("https://mirror.example/b.jpg"))
+
+    def test_recapture_does_not_rewrite_cached_bytes_for_same_url(self):
+        """同一封面 URL 重抓：本地已有图片就不再让插件字节覆盖它。"""
+        api_capture(CaptureRequest(
+            url="https://a.com/detail/ABP-123", title="T",
+            thumbnail="https://img.example/a.jpg",
+            image_base64=base64.b64encode(b"OLD").decode(), image_type="image/jpeg",
+        ))
+        api_capture(CaptureRequest(
+            url="https://a.com/detail/ABP-123", title="T",
+            thumbnail="https://img.example/a.jpg",
+            image_base64=base64.b64encode(b"NEW").decode(), image_type="image/jpeg",
+        ))
+        self.assertEqual(imgcache.get("https://img.example/a.jpg")[0], b"OLD")
+
+    def test_recapture_fills_missing_cover_bytes(self):
+        """封面链接一致但本地还没缓存时，插件字节正好省一次抓图，应当落盘。"""
+        api_capture(CaptureRequest(
+            url="https://a.com/detail/ABP-123", title="T",
+            thumbnail="https://img.example/a.jpg",
+        ))
+        res = api_capture(CaptureRequest(
+            url="https://a.com/detail/ABP-123", title="T",
+            thumbnail="https://img.example/a.jpg",
+            image_base64=base64.b64encode(b"IMG").decode(), image_type="image/jpeg",
+        ))
+        self.assertEqual(res["entry"]["cover_state"], 2)
+        self.assertEqual(imgcache.get("https://img.example/a.jpg")[0], b"IMG")
 
     def test_capture_unrecognized(self):
         res = api_capture(CaptureRequest(url="https://a.com/about", title="x"))

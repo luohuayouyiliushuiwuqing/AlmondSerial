@@ -44,6 +44,24 @@ def _cover_state(cover: str) -> int:
     return 1
 
 
+def _merge_cover(prev_cover: str, incoming: str) -> str:
+    """合并封面 URL：已经能用的封面不被新抓到的地址换掉。
+
+    封面 URL 一换，卡片上的图就跟着换了——旧图字节虽然还在缓存里，但再也没人引用；
+    而插件/镜像站给的往往是低清缩略图或带防盗链的地址，换上是净损失。所以只在原本
+    没有封面、或原封面已确认抓取失败（有 ``.fail`` 标记且缓存不存在）时才采纳新地址。
+    确实想换图请走 ``update_entry`` 手动改。
+    """
+    incoming = (incoming or "").strip()
+    if not incoming or incoming == prev_cover:
+        return prev_cover or incoming
+    if not prev_cover:
+        return incoming
+    if imgcache.is_failed(prev_cover) and not imgcache.has(prev_cover):
+        return incoming
+    return prev_cover
+
+
 # ──────────────────────── 条目状态分级 ────────────────────────
 # 按严重度从高到低：空白 > 详情不全 > 图失效/缺图 > 完整。
 # 「详情到底拿到没有」只认两样：标题 + 发行日期。详情页本来就不保证项项齐全（缺片商、
@@ -231,7 +249,8 @@ def ingest_fetched(meta: dict) -> dict | None:
                 return incoming or (prev[col] if prev is not None else "")
 
             title = keep((meta.get("title") or "").strip(), "title")
-            cover = keep((meta.get("thumbnail") or "").strip(), "cover")
+            cover = _merge_cover(prev["cover"] if prev is not None else "",
+                                 meta.get("thumbnail") or "")
             release_date = keep(typed.get("release_date") or "", "release_date")
             maker = keep(typed.get("maker") or "", "maker")
             director = keep(typed.get("director") or "", "director")

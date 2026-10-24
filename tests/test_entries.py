@@ -23,8 +23,12 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         db.DB_PATH = self.dir / "test.db"
+        # 图片缓存也指到临时目录并还原，避免各测试类之间互相串图
+        self._cache_dir = imgcache.CACHE_DIR
+        imgcache.CACHE_DIR = self.dir / "img"
 
     def tearDown(self):
+        imgcache.CACHE_DIR = self._cache_dir
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -80,6 +84,30 @@ class TestIngestFetched(Base):
         entries.ingest_fetched(_meta("https://a.com/ABP-123", title="旧"))
         e = entries.ingest_fetched(_meta("https://a.com/ABP-123", title=""))
         self.assertEqual(e["title"], "旧")
+
+    def test_successful_fetch_keeps_existing_cover(self):
+        """再次抓取（如插件从镜像站抓同一番号）不能把已有封面换成别的地址。"""
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-123", thumbnail="https://img.example/a.jpg"))
+        e = entries.ingest_fetched(_meta("https://a.com/ABP-123", thumbnail="https://mirror.example/b.jpg"))
+        self.assertEqual(e["cover"], "https://img.example/a.jpg")
+
+    def test_cached_cover_is_not_replaced(self):
+        """原封面的图已经缓存下来，就更没有理由换 URL。"""
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-123", thumbnail="https://img.example/a.jpg"))
+        imgcache.put("https://img.example/a.jpg", b"OLD", "image/jpeg")
+        e = entries.ingest_fetched(_meta("https://a.com/ABP-123", thumbnail="https://mirror.example/b.jpg"))
+        self.assertEqual(e["cover"], "https://img.example/a.jpg")
+        self.assertEqual(imgcache.get("https://img.example/a.jpg")[0], b"OLD")
+
+    def test_failed_cover_can_be_replaced(self):
+        """原封面确认抓不到时，新地址是修复机会，应当采纳。"""
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-123", thumbnail="https://img.example/a.jpg"))
+        imgcache.mark_failed("https://img.example/a.jpg")
+        e = entries.ingest_fetched(_meta("https://a.com/ABP-123", thumbnail="https://mirror.example/b.jpg"))
+        self.assertEqual(e["cover"], "https://mirror.example/b.jpg")
 
     def test_no_code_returns_none(self):
         self.assertIsNone(entries.ingest_fetched(_meta("https://a.com/about")))
@@ -184,10 +212,6 @@ class TestOrdering(Base):
 
 class TestCoverState(Base):
     """封面（图像）抓取状态：0 无链接 / 1 有链接未抓图 / 2 已抓图 / 3 抓图失败。"""
-
-    def setUp(self):
-        super().setUp()
-        imgcache.CACHE_DIR = self.dir / "img"
 
     def _entry(self, cover):
         entries.import_links(["https://a.com/ABP-123"])
