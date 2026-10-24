@@ -9,6 +9,9 @@ dist/
 # ── 运行时数据（SQLite 数据库等，本地私有，不入库）──
 data/
 
+# 上次切换的数据库路径（本机记忆，不入库）
+/.db_state.json
+
 # ── 日志 / 临时 ──
 *.log
 nohup.out

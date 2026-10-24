@@ -44,6 +44,10 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _startup():
+    # 沿用上次切换的数据库（路径记在项目根的 .db_state.json）
+    if db.restore_state() is not None:
+        logger.info(f"沿用上次的数据库：{db.current_path()}")
+    logger.info(f"数据库：{db.current_path()}｜图像缓存：{imgcache.cache_root()}")
     # 增大线程池容量，避免后台抓取占满后页面操作排队
     try:
         anyio.to_thread.current_default_thread_limiter().total_tokens = 200
@@ -311,32 +315,46 @@ def api_export(fmt: str = "txt"):
 
 # ──────────────────────── 数据库 ────────────────────────
 
-@app.get("/api/db")
-def api_db(directory: str = ""):
-    """当前数据库状态；`directory` 给定时返回该目录下的 .db 文件列表（不切换）。"""
-    target_dir = directory.strip() or str(db.DB_PATH.parent)
-    return {
-        "path": str(db.DB_PATH),
-        "directory": str(db.DB_PATH.parent),
-        "name": db.DB_PATH.name,
-        "files": db.list_dbs(target_dir),
-        "listed_directory": target_dir,
-    }
-
-
-@app.post("/api/db")
-def api_db_set(req: DbRequest):
-    """切换数据库：path 为目录 → 该目录/library.db；为 .db 文件 → 直接使用。"""
-    if not req.path.strip():
-        raise HTTPException(400, "缺少数据库路径")
-    path = db.set_db(req.path.strip())
+def _db_info(path: Path, listed_directory: str) -> dict:
+    """数据库状态（含图像缓存目录与用过的库历史）。"""
     return {
         "path": str(path),
         "directory": str(path.parent),
         "name": path.name,
-        "files": db.list_dbs(path.parent),
-        "listed_directory": str(path.parent),
+        "files": db.list_dbs(listed_directory),
+        "listed_directory": listed_directory,
+        "cache_dir": str(imgcache.cache_root()),
+        "history": [
+            {
+                "path": p,
+                "name": Path(p).name,
+                "directory": str(Path(p).parent),
+                "exists": Path(p).is_file(),
+                "current": p == str(path),
+            }
+            for p in db.history()
+        ],
     }
+
+
+@app.get("/api/db")
+def api_db(directory: str = ""):
+    """当前数据库状态；`directory` 给定时返回该目录下的 .db 文件列表（不切换）。"""
+    cur = db.current_path()
+    return _db_info(cur, directory.strip() or str(cur.parent))
+
+
+@app.post("/api/db")
+def api_db_set(req: DbRequest):
+    """切换数据库：path 为目录 → 该目录/library.db；为 .db 文件 → 直接使用。
+
+    图像缓存固定在该库所在目录的 `cache/img`（无则新建），切换后立刻按新位置命中。
+    """
+    if not req.path.strip():
+        raise HTTPException(400, "缺少数据库路径")
+    path = db.set_db(req.path.strip())
+    logger.info(f"切换数据库：{path}｜图像缓存：{imgcache.cache_root()}")
+    return _db_info(path, str(path.parent))
 
 
 # ──────────────────────── 域名管理 ────────────────────────
@@ -486,4 +504,14 @@ def api_img(src: str, referer: str = "", refresh: int = 0):
 
 # ──────────────────────── 静态托管（放最后） ────────────────────────
 
-app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+
+class NoCacheStatic(StaticFiles):
+    """每次都回源校验（未变则 304）：改完 CSS/JS 刷新即生效，不会拿到旧缓存。"""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["cache-control"] = "no-cache"
+        return response
+
+
+app.mount("/", NoCacheStatic(directory=str(STATIC_DIR), html=True), name="static")

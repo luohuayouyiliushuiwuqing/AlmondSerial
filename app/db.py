@@ -4,16 +4,81 @@
 每次操作独立短连接，WAL + timeout=10，线程安全。
 """
 
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from loguru import logger
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+
 # 数据库默认放在项目根的 data/ 下（运行时生成，可被环境变量覆盖）
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "library.db"
+DEFAULT_DB_PATH = PROJECT_DIR / "data" / "library.db"
+DB_PATH = DEFAULT_DB_PATH
+
+# 记住上次切换到的库 + 用过的库历史，重启后沿用并可一键切换回来
+STATE_FILE = PROJECT_DIR / ".db_state.json"
+HISTORY_MAX = 8
 
 # 运行时切换数据库时保护 DB_PATH 的读写（切换与每次建连之间串行化）
 _PATH_LOCK = threading.Lock()
+
+
+def current_path() -> Path:
+    """当前使用的数据库文件路径（图片缓存目录等据此定位，随库走）。"""
+    with _PATH_LOCK:
+        return DB_PATH
+
+
+def _read_state() -> dict:
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_state(**patch) -> None:
+    data = _read_state()
+    data.update(patch)
+    try:
+        STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:  # noqa: BLE001
+        logger.warning(f"数据库状态记忆写入失败：{exc}")
+
+
+def history() -> list[str]:
+    """用过的数据库路径（当前库排最前，去重，最多 HISTORY_MAX 条）。"""
+    saved = [str(x) for x in (_read_state().get("history") or []) if str(x).strip()]
+    cur = str(current_path())
+    items = [cur] + [p for p in saved if p != cur]
+    return items[:HISTORY_MAX]
+
+
+def _remember(path: Path) -> None:
+    """把当前库记为「上次使用」并推到历史最前。"""
+    prev = [str(x) for x in (_read_state().get("history") or []) if str(x).strip()]
+    rest = [p for p in prev if p != str(path)][: HISTORY_MAX - 1]
+    _write_state(db=str(path), history=[str(path)] + rest)
+
+
+def restore_state() -> Path | None:
+    """启动时恢复上次使用的库并记入历史；记下的路径已失效则用默认库（返回 None）。"""
+    global DB_PATH
+    restored = None
+    saved = str(_read_state().get("db") or "").strip()
+    if saved:
+        p = Path(saved).expanduser()
+        if p.is_file():
+            with _PATH_LOCK:
+                DB_PATH = p
+            restored = p
+        else:
+            logger.warning(f"上次使用的数据库已不存在，回退到默认库 {DEFAULT_DB_PATH}：{p}")
+    _remember(current_path())
+    return restored
 
 
 def set_db(path) -> Path:
@@ -21,13 +86,17 @@ def set_db(path) -> Path:
 
     - path 是**目录**（存在且为目录）→ 使用该目录下的 ``library.db``；
     - 否则把 path 当作 ``.db`` **文件路径**直接使用（父目录不存在会自动创建）。
+
+    切换结果会记到 ``.db_state.json``（当前库 + 历史），重启后沿用。
     """
     global DB_PATH
     p = Path(path).expanduser()
     if p.is_dir():
         p = p / "library.db"
+    p = p.resolve()
     with _PATH_LOCK:
         DB_PATH = p
+    _remember(p)
     return p
 
 
