@@ -46,16 +46,6 @@
   </header>
 
   <main id="main" class="main">
-    <!-- 视频 / 演员 两个平级主视图，靠这排标签切换 -->
-    <nav class="view-switch">
-      <button type="button" class="view-tab active" data-view="entries">视频</button>
-      <button type="button" class="view-tab" data-view="actresses">演员</button>
-      <div class="stats">
-        <span id="stats-text">加载中…</span>
-        <span id="queue-text" class="queue-text"></span>
-      </div>
-    </nav>
-
     <section id="view-entries" class="view">
       <div id="grid" class="grid"></div>
       <div id="empty" class="empty" hidden>
@@ -79,6 +69,25 @@
       <div id="actress-entries" class="grid"></div>
     </section>
   </main>
+
+  <!-- 底部导航：视图切换 + 条目数 + 抓取进度；滚动时收起，停稳后出现 -->
+  <footer id="bottombar" class="bottombar">
+    <div class="bottombar-main">
+      <nav class="view-switch" aria-label="视图切换">
+        <button type="button" class="view-tab active" data-view="entries">视频</button>
+        <button type="button" class="view-tab" data-view="actresses">演员</button>
+      </nav>
+      <span id="stats-text" class="bottom-count">加载中…</span>
+      <span id="queue-text" class="bottom-stats"></span>
+      <span id="bottom-activity" class="bottom-activity"></span>
+    </div>
+    <div id="progress-wrap" class="progress-wrap">
+      <div class="progress-track">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <span id="progress-text" class="progress-text">加载中…</span>
+    </div>
+  </footer>
 
   <div id="modal" class="modal" hidden>
     <div class="modal-mask" data-close></div>

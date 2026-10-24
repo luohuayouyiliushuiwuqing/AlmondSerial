@@ -137,6 +137,28 @@ class TestStatusStats(Base):
         self.assertEqual(st["partial"], 1)
         self.assertEqual(st["cover_missing"], 1)
         self.assertEqual(st["pending"], 1)
+        self.assertEqual(st["cover_failed"], 0)
+        self.assertEqual(st["frozen_domains"], 0)
+
+    def test_cover_failed_count(self):
+        """详情齐了、有封面链接，但图片抓取失败 → 图失效。"""
+        entries.import_links(["https://a.com/ABP-5"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-5"))
+        imgcache.mark_failed(COVER)
+
+        st = entries.queue_stats()
+
+        self.assertEqual(st["cover_failed"], 1)
+        self.assertEqual(st["cover_missing"], 0)
+
+    def test_failed_marker_ignored_when_image_cached(self):
+        """残留的 .fail 标记不能把已缓存的封面算成图失效。"""
+        entries.import_links(["https://a.com/ABP-6"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-6"))
+        imgcache.put(COVER, b"IMG", "image/png")
+        imgcache.mark_failed(COVER)
+
+        self.assertEqual(entries.queue_stats()["cover_failed"], 0)
 
     def test_list_entries_carries_status(self):
         entries.import_links(["https://a.com/ABP-123"])
@@ -145,6 +167,29 @@ class TestStatusStats(Base):
         for key in ("status", "status_level", "missing", "retry"):
             self.assertIn(key, rows[0])
         self.assertEqual(rows[0]["status"], "empty")
+
+    def test_partial_counter_matches_badge_for_title_only_entry(self):
+        """只有标题（OG 拿到的），没有日期/封面/详情：徽章是详情不全，计数也必须是。
+
+        这里曾出现过两边判「空白」的字段清单不一致：计数那套漏了标题，于是这类
+        条目在卡片上标「详情不全」却不进底部计数。
+        """
+        entries.import_links(["https://a.com/ABP-9"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-9", thumbnail="", details=[]))
+
+        e = entries.get_entry("ABP-9")
+        self.assertEqual(e["status"], "partial")
+        self.assertEqual(entries.queue_stats()["partial"], 1)
+
+    def test_library_completeness_counts(self):
+        """空闲时进度条显示整库完整度：标题 + 发行日期都拿到才算完整。"""
+        entries.import_links(["https://a.com/ABP-7", "https://a.com/ABP-8"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-7"))
+
+        st = entries.queue_stats()
+
+        self.assertEqual(st["entries_total"], 2)
+        self.assertEqual(st["entries_complete"], 1)
 
 
 if __name__ == "__main__":

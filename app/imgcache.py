@@ -10,6 +10,7 @@ SHA1，与路径无关，所以整个目录连库带缓存一起搬家不会丢�
 import hashlib
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -54,6 +55,40 @@ def has(src: str) -> bool:
 def is_failed(src: str) -> bool:
     """该图像链接是否已被标记为「抓取失败」（暂时不可行，不再自动重试）。"""
     return _fail_path(src).exists()
+
+
+def key_for(src: str) -> str:
+    """图片 URL 对应的缓存键（SHA1），供批量比对失败标记用。"""
+    return _key(src)
+
+
+def failed_keys() -> set[str]:
+    """当前所有失败标记对应的缓存键集合（目录不存在返回空集）。
+
+    只扫 ``*.fail`` 文件，比逐个条目查存在性便宜得多，供图失效修复挑选候选。
+    """
+    try:
+        return {p.name[:-5] for p in cache_root().glob("*.fail")}
+    except OSError:
+        return set()
+
+
+def failed_at(src: str) -> float | None:
+    """失败标记的写入时间（epoch 秒）；没有标记返回 None。"""
+    try:
+        return _fail_path(src).stat().st_mtime
+    except OSError:
+        return None
+
+
+def failed_older_than(src: str, seconds: float) -> bool:
+    """失败标记是否已存在且早于 ``seconds`` 秒前（自动修复的冷却判定）。
+
+    修复失败时会重新写标记（刷新 mtime），因此冷却时间从最后一次尝试起算，
+    死链不会被反复捶打。
+    """
+    t = failed_at(src)
+    return t is not None and (time.time() - t) >= seconds
 
 
 def mark_failed(src: str) -> None:

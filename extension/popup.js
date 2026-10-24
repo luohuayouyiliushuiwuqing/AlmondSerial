@@ -41,6 +41,7 @@ function extractFn() {
 
 const $ = (sel) => document.querySelector(sel);
 const baseInput = $("#base");
+const closeAfterEl = $("#closeAfter");
 const captureBtn = $("#capture");
 const captureAllBtn = $("#captureAll");
 const statusEl = $("#status");
@@ -60,18 +61,30 @@ function setStatus(text, kind) {
   statusEl.className = "status" + (kind ? " " + kind : "");
 }
 
-async function loadBase() {
+// 关页开关默认关：只有用户勾上，抓取成功后才会关掉抓到的标签页
+function closeAfterCapture() {
+  return !!(closeAfterEl && closeAfterEl.checked);
+}
+
+async function loadPrefs() {
   let base = DEFAULT_BASE;
+  let closeAfter = false;
   try {
-    const got = await chrome.storage.local.get("baseUrl");
+    const got = await chrome.storage.local.get(["baseUrl", "closeAfter"]);
     if (got && got.baseUrl) base = got.baseUrl;
+    if (got && got.closeAfter) closeAfter = true;
   } catch (e) {}
   baseInput.value = base;
+  closeAfterEl.checked = closeAfter;
 }
 
 baseInput.addEventListener("change", () => {
   const v = (baseInput.value || "").trim().replace(/\/+$/, "");
   chrome.storage.local.set({ baseUrl: v || DEFAULT_BASE });
+});
+
+closeAfterEl.addEventListener("change", () => {
+  chrome.storage.local.set({ closeAfter: closeAfterEl.checked });
 });
 
 function currentBase() {
@@ -172,7 +185,7 @@ async function collectTabs(base) {
 }
 
 async function extractFromTabs(tabs, onProgress) {
-  const pages = new Array(tabs.length).fill(null);
+  const captured = new Array(tabs.length).fill(null);
   const failed = [];
   let next = 0;
   let done = 0;
@@ -185,7 +198,7 @@ async function extractFromTabs(tabs, onProgress) {
         const [inj] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: extractFn });
         const r = inj && inj.result;
         if (!r || !r.url) throw new Error("页面信息读取失败");
-        pages[idx] = r;
+        captured[idx] = { page: r, tabId: tab.id };
       } catch (e) {
         let msg = (e && e.message ? e.message : String(e)).split("\n")[0];
         if (msg.length > 60) msg = msg.slice(0, 60) + "…";
@@ -199,7 +212,26 @@ async function extractFromTabs(tabs, onProgress) {
   const workers = [];
   for (let i = 0; i < Math.min(CONCURRENCY, tabs.length); i += 1) workers.push(run());
   await Promise.all(workers);
-  return { pages: pages.filter(Boolean), failed: failed };
+  return { captured: captured.filter(Boolean), failed: failed };
+}
+
+// 关闭已经抓取成功的标签页；个别标签已被手动关掉时不让整批失败
+async function closeTabs(tabIds) {
+  const ids = (tabIds || []).filter((id) => typeof id === "number");
+  if (!ids.length) return 0;
+  try {
+    await chrome.tabs.remove(ids);
+    return ids.length;
+  } catch (e) {
+    let closed = 0;
+    for (const id of ids) {
+      try {
+        await chrome.tabs.remove(id);
+        closed += 1;
+      } catch (err) {}
+    }
+    return closed;
+  }
 }
 
 function chunkPages(pages) {
@@ -351,8 +383,13 @@ captureBtn.addEventListener("click", async () => {
     if (res.unrecognized) {
       setStatus("未识别出番号，未保存", "err");
     } else {
-      setStatus("已保存", "ok");
       renderResult(res.entry, data);
+      setStatus("已保存", "ok");
+      if (closeAfterCapture()) {
+        const closed = await closeTabs([tab.id]);
+        setStatus(closed ? "已保存，页面已关闭" : "已保存（页面关闭失败）",
+                  closed ? "ok" : "err");
+      }
     }
   } catch (e) {
     setStatus("失败：" + (e && e.message ? e.message : e), "err");
@@ -380,31 +417,36 @@ captureAllBtn.addEventListener("click", async () => {
       return;
     }
 
-    const { pages, failed } = await extractFromTabs(usable, (done, total) => {
+    const { captured, failed } = await extractFromTabs(usable, (done, total) => {
       setStatus(`抓取中 ${done}/${total}…`);
     });
 
-    if (!pages.length) {
+    if (!captured.length) {
       renderSkipped(skipped.concat(failed));
       setStatus("所有页面都读取失败", "err");
       return;
     }
 
-    setStatus(`正在保存 ${pages.length} 页…`);
-    const payload = pages.map((p) => ({
-      url: p.url,
-      title: p.title || "",
-      thumbnail: p.thumbnail || "",
-      details: p.details || [],
+    setStatus(`正在保存 ${captured.length} 页…`);
+    const payload = captured.map((c) => ({
+      url: c.page.url,
+      title: c.page.title || "",
+      thumbnail: c.page.thumbnail || "",
+      details: c.page.details || [],
     }));
     const res = await postSnapshots(base, payload);
 
     renderBatchList(res.items);
     renderSkipped(skipped.concat(failed));
-    setStatus(
-      `已抓取 ${res.saved} 页：保存番号 ${res.entries} 个，未识别 ${res.unrecognized} 页已留档快照`,
-      "ok"
-    );
+    const summary = `已抓取 ${res.saved} 页：保存番号 ${res.entries} 个，未识别 ${res.unrecognized} 页已留档快照`;
+
+    if (!closeAfterCapture()) {
+      setStatus(summary, "ok");
+      return;
+    }
+    setStatus("正在关闭已抓取的标签页…");
+    const closed = await closeTabs(captured.map((c) => c.tabId));
+    setStatus(`${summary}；已关闭 ${closed} 个标签页`, closed ? "ok" : "err");
   } catch (e) {
     setStatus("失败：" + (e && e.message ? e.message : e), "err");
   } finally {
@@ -412,4 +454,4 @@ captureAllBtn.addEventListener("click", async () => {
   }
 });
 
-loadBase();
+loadPrefs();

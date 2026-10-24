@@ -1529,17 +1529,123 @@ async function updateQueueStatus() {
   try {
     const st = await api("/api/queue/status");
     state.queue = st;
+
     const el = $("#queue-text");
-    if (!el) return;
-    const parts = [];
-    if (st.queue > 0) parts.push(`抓取中 ${st.queue} 条`);
-    if (st.pending > 0) parts.push(`待抓取 ${st.pending}`);
-    if (st.failed > 0) parts.push(`失败 ${st.failed}`);
-    if (st.partial > 0) parts.push(`详情不全 ${st.partial}`);
-    if (st.cover_missing > 0) parts.push(`缺图 ${st.cover_missing}`);
-    el.textContent = parts.length ? parts.join(" · ") : "";
+    if (el) {
+      // 各类异常计数常驻显示（含 0），一眼能看出哪一类有多少
+      const n = (v) => Number(v) || 0;
+      el.textContent = [
+        `未抓 ${n(st.pending)}`,
+        `链接失效 ${n(st.failed)}`,
+        `详情不全 ${n(st.partial)}`,
+        `图失效 ${n(st.cover_failed)}`,
+        `缺图 ${n(st.cover_missing)}`,
+        `冻结域名 ${n(st.frozen_domains)}`,
+      ].join(" · ");
+    }
+
+    renderProgress(st);
   } catch (e) {}
 }
+
+// 把 worker 的实时状态画成底部进度条，并显示「正在抓哪一条」
+// fetch：后台队列抓页面；cover：图失效只重试图片；page：详情不全重抓页面
+const KIND_TEXT = {
+  fetch: "正在抓取",
+  cover: "图修复",
+  page: "详情修复",
+};
+
+// 活动文案里用「域名/路径」，比只给域名更能看出到底在抓哪一条；完整 URL 放 title
+function shortUrl(u) {
+  return String(u || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+function renderProgress(st) {
+  const wrap = $("#progress-wrap");
+  const activityEl = $("#bottom-activity");
+  if (!wrap) return;
+
+  const active = Array.isArray(st.active) ? st.active : [];
+  const remaining = Number(st.remaining) || 0;
+  const percent = typeof st.percent === "number" ? st.percent : null;
+  const clamp = (n) => Math.max(0, Math.min(100, n));
+  // 修复线程的活动（kind 不是 fetch）：队列空闲后仍在重试封面 / 补全详情
+  const rep = active.find((a) => a.kind && a.kind !== "fetch");
+  const fetching = active.some((a) => !a.kind || a.kind === "fetch");
+
+  // 正在抓哪一条：显示去掉协议/尾部斜杠的链接，悬停可看完整地址
+  if (active.length) {
+    const a0 = active[0];
+    const verb = KIND_TEXT[a0.kind] || KIND_TEXT.fetch;
+    const label = shortUrl(a0.url) || a0.domain || "";
+    activityEl.textContent = !label
+      ? `${verb}…`
+      : active.length > 1
+        ? `${verb}：${label} 等 ${active.length} 个`
+        : `${verb}：${label}`;
+    activityEl.title = active
+      .filter((a) => a.url)
+      .map((a) => `${KIND_TEXT[a.kind] || KIND_TEXT.fetch}：${a.url}`)
+      .join("\n");
+  } else {
+    activityEl.textContent = remaining > 0 ? "排队中…" : "";
+    activityEl.removeAttribute("title");
+  }
+
+  // 进度条常驻，且始终是**确定进度**：抓取→本批百分比；修复→本轮百分比；
+  // 空闲→整库资料完整度。不显示来回滑动的「正在运行」动画。
+  wrap.hidden = false;
+  const fill = $("#progress-fill");
+  const text = $("#progress-text");
+  fill.classList.remove("indeterminate");
+
+  // 1) 正在抓取：本批任务的完成百分比
+  if (remaining > 0 || fetching) {
+    const pct = percent === null ? 0 : clamp(percent);
+    fill.style.width = pct + "%";
+    text.textContent = percent === null
+      ? "抓取中…"
+      : `抓取 ${st.done}/${st.total}（${Math.round(pct)}%）`;
+    return;
+  }
+
+  // 2) 正在修复：本轮修复工作量的完成百分比
+  if (rep && Number(rep.total) > 0) {
+    const done = Number(rep.done) || 0;
+    const total = Number(rep.total);
+    const pct = clamp((done * 100) / total);
+    fill.style.width = pct + "%";
+    const label = rep.kind === "page" ? "详情修复" : "图修复";
+    text.textContent = `${label} ${done}/${total}（${Math.round(pct)}%）`;
+    return;
+  }
+
+  // 3) 空闲：整库资料完整度（标题 + 发行日期都拿到的条目占比）
+  const all = Number(st.entries_total) || 0;
+  const ok = Number(st.entries_complete) || 0;
+  if (all > 0) {
+    const pct = clamp((ok * 100) / all);
+    fill.style.width = pct + "%";
+    text.textContent = `资料完整 ${ok}/${all}（${Math.round(pct)}%）`;
+    return;
+  }
+
+  fill.style.width = "0%";
+  text.textContent = "暂无条目";
+}
+
+// 滚动时收起底部导航条，停稳后重新出现
+(function bindBottombarAutoHide() {
+  const bar = $("#bottombar");
+  if (!bar) return;
+  let hideTimer = null;
+  window.addEventListener("scroll", () => {
+    bar.classList.add("hidden");
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => bar.classList.remove("hidden"), 260);
+  }, { passive: true });
+})();
 
 // 窄屏放不下长占位文案，换成短的（桌面保留 HTML 里的完整说明）；
 // 搜索框的占位文案随视图变，统一在 setView 里给出

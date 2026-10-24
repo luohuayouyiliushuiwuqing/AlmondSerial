@@ -18,6 +18,11 @@
       <input id="base" type="text" placeholder="http://127.0.0.1:8000" autocomplete="off" spellcheck="false" />
     </label>
 
+    <label class="check">
+      <input id="closeAfter" type="checkbox" />
+      <span>抓取后关闭这些标签页</span>
+    </label>
+
     <button id="captureAll" class="btn primary">抓取全部标签页</button>
     <button id="capture" class="btn secondary">抓取当前页</button>
 
@@ -38,7 +43,7 @@
       <ul id="skippedList"></ul>
     </details>
 
-    <p class="hint">「抓取全部标签页」会遍历浏览器所有窗口的标签页，自动跳过系统页面（chrome://、扩展页等）与本机地址（localhost、127.x、内网 IP），一页识别不出番号也会留档到网页快照。</p>
+    <p class="hint">「抓取全部标签页」会遍历浏览器所有窗口的标签页，自动跳过系统页面（chrome://、扩展页等）与本机地址（localhost、127.x、内网 IP），一页识别不出番号也会留档到网页快照。勾上「抓取后关闭这些标签页」后，抓取成功的页面会被关掉（读取失败的、跳过的不动）。</p>
   </div>
   <script src="popup.js"></script>
 </body>

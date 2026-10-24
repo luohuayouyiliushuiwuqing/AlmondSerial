@@ -5,10 +5,7 @@
     /home/igs/miniconda3/envs/xingren/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 """
 
-import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
-from urllib.request import ProxyHandler, build_opener
 
 import base64
 import logging
@@ -22,9 +19,8 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cookies as cookie_ctl
 from . import actresses, db, entries, imgcache, importer, proxy, snapshots, worker
-from .fetcher import check_domain, fetch_page
+from .fetcher import check_domain, fetch_image_bytes, fetch_page
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -489,46 +485,6 @@ def api_proxy_check():
 
 # ──────────────────────── 图片代理 ────────────────────────
 
-def _fetch_image_bytes(src: str, proxy_url: str | None, timeout: int = 15,
-                       referer: str = "") -> tuple[bytes, str] | None:
-    """抓取图片字节（带 Cookie 注入 + 防盗链 Referer）；失败返回 None。
-
-    优先用 curl_cffi 的 TLS 指纹抓取（绕过 Cloudflare 等反爬），失败回退 urllib。
-    """
-    # 防盗链通常校验 Referer 是否来自站点页面（而非图片自身），缺省用图片同源兜底
-    if not referer:
-        p = urlparse(src)
-        referer = f"{p.scheme}://{p.netloc}/"
-    headers = {"Referer": referer}
-    cookie = cookie_ctl.get_cookie_header(src)
-    if cookie:
-        headers["Cookie"] = cookie
-
-    try:
-        from curl_cffi import requests as cf
-        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-        resp = cf.get(src, headers=headers, proxies=proxies, timeout=timeout,
-                      impersonate="chrome", allow_redirects=True)
-        if resp.status_code < 400:
-            ctype = resp.headers.get("Content-Type", "application/octet-stream")
-            return resp.content, ctype
-        logger.warning(
-            f"curl_cffi 抓图 HTTP {resp.status_code}：{src}"
-            f"（server={resp.headers.get('server')} cf-ray={resp.headers.get('cf-ray')}），回退 urllib"
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"curl_cffi 抓图异常：{src}（{type(exc).__name__}: {exc}），回退 urllib")
-
-    try:
-        req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0", **headers})
-        opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url})) if proxy_url else build_opener()
-        with opener.open(req, timeout=timeout) as r:
-            return r.read(), r.headers.get("Content-Type", "application/octet-stream")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"urllib 抓图失败：{src}（{type(exc).__name__}: {exc}）")
-        return None
-
-
 @app.get("/api/img")
 def api_img(src: str, referer: str = "", refresh: int = 0):
     """服务端代抓图片（封面跨域/防盗链兜底），走**全局代理**，并**落盘缓存**。
@@ -544,8 +500,10 @@ def api_img(src: str, referer: str = "", refresh: int = 0):
         raise HTTPException(400, "src 必须是 http(s) 地址")
 
     # ① 已知失败且未要求强制重试 → 直接 404，不重复抓取
+    #    no-store：避免浏览器把失败也缓存住，后台修复好之后仍显示旧结果
     if imgcache.is_failed(src) and not refresh:
-        raise HTTPException(404, "图片抓取失败（该链接此前已失败，暂不重试）")
+        raise HTTPException(404, "图片抓取失败（该链接此前已失败，暂不重试）",
+                            headers={"Cache-Control": "no-store"})
     if refresh:
         imgcache.clear_failed(src)
 
@@ -558,14 +516,15 @@ def api_img(src: str, referer: str = "", refresh: int = 0):
 
     # ③ 缓存未命中 → 抓取
     proxy_url = proxy.resolve() or None
-    got = _fetch_image_bytes(src, proxy_url, referer=referer)
+    got = fetch_image_bytes(src, proxy_url, referer=referer)
     if got is None and proxy_url:
         # 代理可能失效（端口漂移/连接拒绝），强制重新探测代理再试一次
         proxy_url = proxy.resolve(force=True) or None
-        got = _fetch_image_bytes(src, proxy_url, referer=referer)
+        got = fetch_image_bytes(src, proxy_url, referer=referer)
     if got is None:
         imgcache.mark_failed(src)
-        raise HTTPException(404, "图片抓取失败（源站反爬或代理不可用）")
+        raise HTTPException(404, "图片抓取失败（源站反爬或代理不可用）",
+                            headers={"Cache-Control": "no-store"})
 
     # ④ 落盘缓存，下次直接命中（同时清除失败标记）
     data, ctype = got

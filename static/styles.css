@@ -138,7 +138,8 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── 主区 ── */
-.main { padding: 20px; }
+/* 底部留出固定导航条的高度（含进度条时约两行） */
+.main { padding: 20px 20px calc(108px + env(safe-area-inset-bottom)); }
 
 /* 视频 / 演员 两个平级主视图的切换条；统计信息靠右同排 */
 .view-switch { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -159,8 +160,46 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
   border-color: transparent;
   color: #fff;
 }
-.stats { margin-left: auto; color: var(--text-dim); font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.queue-text { color: var(--text-dim); font-size: 13px; }
+
+/* ── 底部导航：视图切换 + 条目数 + 抓取进度 ── */
+.bottombar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  padding: 8px 20px calc(8px + env(safe-area-inset-bottom));
+  background: rgba(15, 17, 21, 0.92);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  /* 滚动时向下收起，停稳后由 JS 移除 .hidden 让它滑回来 */
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+.bottombar.hidden { transform: translateY(110%); opacity: 0; pointer-events: none; }
+.bottombar-main { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.bottombar .view-switch { margin: 0; }
+.bottom-count { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.bottom-stats { color: var(--text-dim); font-size: 13px; overflow-wrap: anywhere; }
+.bottom-activity {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 12px;
+  max-width: 42vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-wrap { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.progress-wrap[hidden] { display: none; }
+.progress-track { flex: 1; height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.4s ease;
+}
+.progress-text { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
 
 .grid {
   display: grid;
@@ -446,7 +485,7 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
 /* ── toast ── */
 .toast {
   position: fixed;
-  bottom: 24px;
+  bottom: calc(92px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   background: var(--panel-2);
@@ -624,11 +663,19 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
   /* ── 主区 ── */
   .main {
     padding: 8px calc(10px + env(safe-area-inset-right))
-      calc(14px + env(safe-area-inset-bottom))
+      calc(140px + env(safe-area-inset-bottom))
       calc(10px + env(safe-area-inset-left));
   }
-  .stats { font-size: 12px; gap: 8px; overflow-wrap: anywhere; }
-  .queue-text { font-size: 12px; }
+  /* ── 底部导航：窄屏改成两行（导航/统计一行，进度一行） ── */
+  .bottombar {
+    padding: 6px calc(10px + env(safe-area-inset-right))
+      calc(6px + env(safe-area-inset-bottom))
+      calc(10px + env(safe-area-inset-left));
+  }
+  .bottombar-main { gap: 8px; }
+  .bottom-stats { font-size: 11px; }
+  .bottom-activity { flex: 1 1 100%; order: 5; margin-left: 0; max-width: 100%; }
+  .progress-text { font-size: 11px; }
 
   /* ── 卡片：横向列表行（封面左、信息右，垂直居中） ── */
   .grid { grid-template-columns: 1fr; gap: 8px; }
@@ -768,7 +815,7 @@ body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
     left: 12px;
     right: 12px;
     transform: none;
-    bottom: calc(12px + env(safe-area-inset-bottom));
+    bottom: calc(112px + env(safe-area-inset-bottom));
     text-align: center;
   }
   /* 详情面板打开时底部有 sticky 操作栏，toast 需再抬高才不遮按钮 */

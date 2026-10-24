@@ -329,12 +329,43 @@ def list_failed_links(limit: int = 5000) -> list[str]:
         return [r["url"] for r in rows]
 
 
+# 「空白条目」判据（与 _entry_state 的 blank 完全一致）：所有内容字段都为空
+_BLANK_ENTRY_SQL = (
+    "e.title = '' AND e.cover = '' AND e.details = '[]' AND e.release_date = '' "
+    "AND e.maker = '' AND e.director = '' AND e.label = '' AND e.series = '' "
+    "AND e.duration = '' AND e.rating = '' AND e.actors = '[]' AND e.genres = '[]'"
+)
+
+
+def list_page_repair_codes(limit: int = 50) -> list[str]:
+    """需要**重抓页面**才能补全的条目（partial / cover_missing），按更新时间从旧到新。
+
+    - partial：有内容但缺标题或发行日期；
+    - cover_missing：标题和发行日期齐了，但没有封面链接。
+
+    只取 ``fetched=1``（已抓过；0 待抓、2 失败由 worker 处理）。判据与
+    ``_entry_state`` 保持一致，避免「状态」与「修复候选」各说各话。
+    """
+    sql = (
+        "SELECT e.code FROM entries e "
+        f"WHERE e.fetched = 1 AND NOT ({_BLANK_ENTRY_SQL}) "
+        "AND (e.title = '' OR e.release_date = '' OR e.cover = '') "
+        "ORDER BY e.updated_at ASC LIMIT ?"
+    )
+    with db.conn() as conn:
+        return [r[0] for r in conn.execute(sql, (limit,)).fetchall()]
+
+
 def queue_stats() -> dict:
     """抓取队列统计：未抓取 / 失败（按链接，排除冻结域名）+ 异常分布（按条目）。
 
     `partial`：详情不全（缺标题或发行日期）；完全空白的条目不重复计入，它们已经
     体现在上面按链接统计的未抓取 / 失败里；
-    `cover_missing`：详情齐了（有标题和发行日期）但没有封面链接。
+    `cover_missing`：详情齐了（有标题和发行日期）但没有封面链接；
+    `cover_failed`：详情齐了、有封面链接，但图片抓取失败（有 ``.fail`` 标记且无缓存）；
+    `frozen_domains`：已冻结的域名数（冻结域名下的链接不计入未抓/失败，需单独可见）；
+    `entries_total` / `entries_complete`：条目总数与资料完整（标题+发行日期都拿到）数，
+    供进度条在空闲时显示整库完整度。
     """
     base = ("FROM entry_links el JOIN entries e ON e.code = el.code "
             "LEFT JOIN domain_state ds ON ds.domain = el.domain "
@@ -342,17 +373,40 @@ def queue_stats() -> dict:
     with db.conn() as conn:
         pending = conn.execute(f"SELECT count(*) {base} e.fetched = 0").fetchone()[0]
         failed = conn.execute(f"SELECT count(*) {base} e.fetched = 2").fetchone()[0]
+        # partial 的判据必须与 _entry_state 完全一致：用同一份「空白条目」SQL 排除
+        # 完全空的条目，而不是各自维护一份字段清单——否则只有标题的条目会在徽章上
+        # 显示「详情不全」却不进计数。
         row = conn.execute(
             "SELECT "
-            " SUM(CASE WHEN (title = '' OR release_date = '') AND (cover <> '' "
-            "      OR length(details) > 2 OR maker <> '' OR director <> '' OR label <> '' "
-            "      OR series <> '' OR duration <> '' OR rating <> '' "
-            "      OR actors <> '[]' OR genres <> '[]') THEN 1 ELSE 0 END) AS partial, "
-            " SUM(CASE WHEN cover = '' AND title <> '' AND release_date <> '' "
-            "      THEN 1 ELSE 0 END) AS cover_missing "
-            "FROM entries").fetchone()
+            f" SUM(CASE WHEN (e.title = '' OR e.release_date = '') "
+            f"      AND NOT ({_BLANK_ENTRY_SQL}) THEN 1 ELSE 0 END) AS partial, "
+            " SUM(CASE WHEN e.cover = '' AND e.title <> '' AND e.release_date <> '' "
+            "      THEN 1 ELSE 0 END) AS cover_missing, "
+            " SUM(CASE WHEN e.title <> '' AND e.release_date <> '' "
+            "      THEN 1 ELSE 0 END) AS complete, "
+            " count(*) AS entries_total "
+            "FROM entries e").fetchone()
+        covers = conn.execute(
+            "SELECT cover FROM entries "
+            "WHERE cover <> '' AND title <> '' AND release_date <> ''"
+        ).fetchall()
+        frozen = conn.execute(
+            "SELECT count(*) FROM domain_state WHERE frozen = 1").fetchone()[0]
+
+    # 图失效：先用失败标记集合过滤（只对真正失败过的 URL 做存在性检查），避免全库 stat
+    failed_keys = imgcache.failed_keys()
+    cover_failed = 0
+    if failed_keys:
+        for r in covers:
+            cover = r["cover"]
+            if imgcache.key_for(cover) in failed_keys and not imgcache.has(cover):
+                cover_failed += 1
+
     return {"pending": pending, "failed": failed,
-            "partial": row["partial"] or 0, "cover_missing": row["cover_missing"] or 0}
+            "partial": row["partial"] or 0, "cover_missing": row["cover_missing"] or 0,
+            "cover_failed": cover_failed, "frozen_domains": frozen,
+            "entries_total": row["entries_total"] or 0,
+            "entries_complete": row["complete"] or 0}
 
 
 # ──────────────────────── 详情代理补全 ────────────────────────
