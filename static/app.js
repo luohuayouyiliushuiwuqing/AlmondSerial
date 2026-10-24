@@ -61,6 +61,44 @@ function coverStateOf(e) {
   return Number.isInteger(e.cover_state) ? e.cover_state : (e.cover ? 1 : 0);
 }
 
+// 条目状态：等级由后端算好（empty / no_detail / partial / cover_missing / cover_failed / ok），
+// 前端只负责文案与色调。「empty」再按 fetched 细分「待抓取」和「抓取失败」。
+const STATUS_LABEL = {
+  no_detail: "缺详情",
+  partial: "详情不全",
+  cover_missing: "缺图",
+  cover_failed: "图失效",
+};
+
+function statusLabel(e) {
+  if (e.status === "empty") return e.fetched === 2 ? "抓取失败" : "待抓取";
+  return STATUS_LABEL[e.status] || "";
+}
+
+function statusTone(e) {
+  if (e.status === "ok") return "";
+  return e.status === "partial" || e.status === "cover_missing" ? "warn" : "bad";
+}
+
+function statusHint(e) {
+  switch (e.status) {
+    case "empty":
+      return e.fetched === 2
+        ? "抓了但什么都没拿到：源站反爬、链接失效，或该域名已被冻结（见「域名」面板）。"
+        : "从未抓到过内容：还在队列里，或所属域名被冻结。";
+    case "no_detail":
+      return "详情区是空的——可能没抓过详情，也可能某次抓到的不是详情页。缺图也归在这一级：先把详情抓回来。";
+    case "partial":
+      return "有详情，但关键项不全（见下方）。可重抓详情，或用「代理补全」填缺项。";
+    case "cover_missing":
+      return "详情齐全，但没有封面链接（详情页可能没给缩略图）——重抓详情页才有机会拿到。";
+    case "cover_failed":
+      return "有封面链接但抓不到图：源站反爬 / 防盗链 / 代理不可用。只需重抓封面图，不用动详情。";
+    default:
+      return "完整。";
+  }
+}
+
 function imgBadge(text, cls) {
   const b = document.createElement("span");
   b.className = "img-badge " + cls;
@@ -68,32 +106,49 @@ function imgBadge(text, cls) {
   return b;
 }
 
+// 强制重抓封面图（refresh=1：服务端清掉失败标记后重新下载并落缓存），不碰详情
+function reloadCover(e, container) {
+  container.classList.remove("cover-fallback");
+  container.textContent = "";
+  const img = document.createElement("img");
+  img.src = coverUrl(e, true);
+  img.alt = e.title || "";
+  img.onerror = () => {
+    img.remove();
+    container.classList.add("cover-fallback");
+    container.textContent = e.code;
+    container.appendChild(buildRetryBtn(container, e));
+  };
+  container.appendChild(img);
+}
+
 function buildRetryBtn(container, e) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "btn btn-mini cover-retry";
   b.textContent = "重试封面";
-  b.addEventListener("click", () => {
-    container.classList.remove("cover-fallback");
-    container.textContent = "";
-    const img = document.createElement("img");
-    img.src = coverUrl(e, true);
-    img.alt = e.title || "";
-    img.onerror = () => {
-      img.remove();
-      container.classList.add("cover-fallback");
-      container.textContent = e.code;
-      container.appendChild(buildRetryBtn(container, e));
-    };
-    container.appendChild(img);
-  });
+  b.addEventListener("click", () => reloadCover(e, container));
   return b;
 }
 
+let lastGridSig = null;
+
+function gridSignature() {
+  const rows = state.entries.map(
+    (e) => `${e.code}|${e.fetched}|${coverStateOf(e)}|${e.status || ""}|${e.title || ""}|${e.cover || ""}`
+  );
+  rows.push(String(state.total));
+  return rows.join("\n");
+}
+
 function renderGrid() {
-  grid.innerHTML = "";
   stats.textContent = `共 ${state.total} 条`;
   empty.hidden = state.entries.length > 0;
+  // 轮询无变化时不重建 DOM，避免图片重绘与滚动抖动
+  const sig = gridSignature();
+  if (sig === lastGridSig) return;
+  lastGridSig = sig;
+  grid.innerHTML = "";
   for (const e of state.entries) {
     grid.appendChild(renderCard(e));
   }
@@ -111,6 +166,7 @@ function renderCard(e) {
     const img = document.createElement("img");
     img.src = coverUrl(e);
     img.loading = "lazy";
+    img.decoding = "async";
     img.alt = e.title;
     img.onerror = () => { img.remove(); cover.classList.add("cover-fallback"); cover.textContent = e.code; };
     cover.appendChild(img);
@@ -118,11 +174,8 @@ function renderCard(e) {
     cover.classList.add("cover-fallback");
     cover.textContent = e.code;
   }
-  if (coverState === 3) {
-    cover.appendChild(imgBadge("图失败", "failed"));
-  } else if (coverState === 0 && e.fetched === 1) {
-    cover.appendChild(imgBadge("缺图", "missing"));
-  }
+  const badge = statusLabel(e);
+  if (badge) cover.appendChild(imgBadge(badge, statusTone(e)));
 
   // 打开来源链接按钮（hover 显示，新标签打开第一条链接，不触发进详情）
   if (e.links && e.links.length) {
@@ -164,18 +217,6 @@ function renderCard(e) {
       tags.appendChild(chip);
     }
     body.appendChild(tags);
-  }
-
-  if (e.fetched === 0) {
-    const badge = document.createElement("span");
-    badge.className = "pending-dot";
-    badge.title = "待抓取";
-    card.appendChild(badge);
-  } else if (e.fetched === 2) {
-    const badge = document.createElement("span");
-    badge.className = "failed-dot";
-    badge.title = "抓取失败";
-    card.appendChild(badge);
   }
 
   card.append(cover, body);
@@ -239,6 +280,70 @@ function linkChipList(links, cls = "chip") {
 function firstLink(e, field) {
   const ls = e.field_links && e.field_links[field];
   return ls && ls.length ? ls[0].href : "";
+}
+
+// 「状态」区块：等级 + 说明 + 缺失项 + 按等级给出的重试动作
+function renderStatusSection(e) {
+  const sec = document.createElement("div");
+  sec.className = "detail-section status-section";
+  const h = document.createElement("h3");
+  h.textContent = "状态";
+  const line = document.createElement("div");
+  line.className = "status-line";
+  const tag = document.createElement("span");
+  tag.className = "status-tag " + statusTone(e);
+  tag.textContent = statusLabel(e);
+  const hint = document.createElement("span");
+  hint.className = "status-hint";
+  hint.textContent = statusHint(e);
+  line.append(tag, hint);
+  sec.append(h, line);
+
+  if (e.missing && e.missing.length) {
+    const chips = chipList(e.missing.map((m) => "缺" + m));
+    chips.classList.add("status-missing");
+    sec.appendChild(chips);
+  }
+
+  const btn = retryButton(e);
+  if (btn) sec.appendChild(btn);
+  return sec;
+}
+
+function retryButton(e) {
+  const action = e.retry || "";
+  if (!action) return null;
+  const labels = { detail: "重抓详情", both: "全部重抓", cover: "重抓封面图" };
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn" + (action === "cover" ? "" : " btn-primary");
+  b.textContent = labels[action];
+  b.title = action === "cover"
+    ? "只清掉失败标记并重下这张图，不动详情"
+    : "重抓详情页（已有非空字段不会被空值覆盖）";
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    b.textContent = "处理中…";
+    try {
+      if (action === "cover") {
+        const el = modalBody.querySelector(".detail-cover");
+        if (el) reloadCover(e, el);
+        toast("已重新抓取封面");
+        await loadEntries();
+        return;
+      }
+      await api(`/api/entry/${encodeURIComponent(e.code)}/fetch`, { method: "POST" });
+      toast(action === "both" ? "已重抓详情与封面" : "已重抓详情");
+      await openDetail(e.code);
+      await loadEntries();
+    } catch (err) {
+      toast("重试失败：" + err.message);
+    } finally {
+      b.disabled = false;
+      b.textContent = labels[action];
+    }
+  });
+  return b;
 }
 
 async function openDetail(code) {
@@ -448,7 +553,10 @@ function renderDetail(e) {
   });
   actions.append(fetchBtn, enrichBtn, editBtn, delBtn);
 
-  modalBody.append(head, actors, genres, links, tags, raw, actions);
+  const parts = [head];
+  if (e.status && e.status !== "ok") parts.push(renderStatusSection(e));
+  parts.push(actors, genres, links, tags, raw, actions);
+  modalBody.append(...parts);
 }
 
 function renderEdit(e) {
@@ -836,6 +944,41 @@ async function openDbPanel(directory = "") {
   current.className = "db-current";
   current.textContent = `当前数据库：${st.path}`;
 
+  const cacheLine = document.createElement("div");
+  cacheLine.className = "db-current db-cache";
+  cacheLine.textContent = `图像缓存：${st.cache_dir || "（未知）"}`;
+
+  // 用过的库：点一下就切回去（缓存跟着库所在目录走）
+  const histWrap = document.createElement("div");
+  histWrap.className = "db-list-wrap";
+  const histTitle = document.createElement("div");
+  histTitle.className = "db-list-title";
+  histTitle.textContent = "最近使用";
+  const histList = document.createElement("div");
+  histList.className = "db-list db-hist";
+  for (const h of st.history || []) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "db-item" + (h.current ? " active" : "") + (h.exists ? "" : " dead");
+    row.title = h.path;
+    row.textContent = h.path + (h.current ? "（当前）" : h.exists ? "" : "（文件已不在）");
+    row.disabled = h.current || !h.exists;
+    row.addEventListener("click", async () => {
+      row.disabled = true;
+      try {
+        await api("/api/db", { method: "POST", body: { path: h.path } });
+        toast("已切换数据库：" + h.name);
+        closeModal();
+        await reloadAfterSwitch();
+      } catch (err) {
+        toast("切换失败：" + err.message);
+        row.disabled = false;
+      }
+    });
+    histList.appendChild(row);
+  }
+  histWrap.append(histTitle, histList);
+
   const form = document.createElement("form");
   form.className = "db-form";
   const input = document.createElement("input");
@@ -920,7 +1063,7 @@ async function openDbPanel(directory = "") {
     }
   });
 
-  modalBody.append(h, current, form, listWrap, useDefault);
+  modalBody.append(h, current, cacheLine, histWrap, form, listWrap, useDefault);
   modal.hidden = false;
 }
 
@@ -1129,6 +1272,33 @@ $("#db-btn").addEventListener("click", () => openDbPanel());
 $("#domains-btn").addEventListener("click", openDomainsPanel);
 $("#proxy-btn").addEventListener("click", openProxyPanel);
 $("#file-import-btn").addEventListener("click", () => $("#file-input").click());
+
+// 顶栏「⚙」是唯一的功能入口：导入导出与全部配置都收在这张面板里
+const sheet = $("#set-sheet");
+const sheetToggle = $("#set-toggle");
+function closeSheets() {
+  sheet.classList.remove("open");
+  sheetToggle.setAttribute("aria-expanded", "false");
+}
+sheetToggle.addEventListener("click", () => {
+  const willOpen = !sheet.classList.contains("open");
+  closeSheets();
+  if (willOpen) {
+    sheet.classList.add("open");
+    sheetToggle.setAttribute("aria-expanded", "true");
+  }
+});
+for (const sel of ["#db-btn", "#domains-btn", "#proxy-btn", "#file-import-btn", "#export-btn"]) {
+  $(sel).addEventListener("click", closeSheets);
+}
+$("#sheet-scrim").addEventListener("click", closeSheets);
+// 点面板外任意位置收起（桌面端是下拉菜单，没有遮罩）
+// capture 阶段：卡片自身的 click 会 stopPropagation，冒泡阶段收不到
+document.addEventListener("click", (ev) => {
+  if (!sheet.classList.contains("open")) return;
+  if (ev.target.closest("#set-sheet") || ev.target.closest("#set-toggle")) return;
+  closeSheets();
+}, true);
 $("#file-input").addEventListener("change", async (ev) => {
   const file = ev.target.files[0];
   ev.target.value = "";
@@ -1143,7 +1313,9 @@ modal.addEventListener("click", (ev) => {
   if (ev.target.dataset.close !== undefined) closeModal();
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") closeModal();
+  if (ev.key !== "Escape") return;
+  closeModal();
+  closeSheets();
 });
 
 // ──────────────────────── 启动 ────────────────────────
@@ -1158,8 +1330,20 @@ async function updateQueueStatus() {
     if (st.queue > 0) parts.push(`抓取中 ${st.queue} 条`);
     if (st.pending > 0) parts.push(`待抓取 ${st.pending}`);
     if (st.failed > 0) parts.push(`失败 ${st.failed}`);
+    if (st.no_detail > 0) parts.push(`缺详情 ${st.no_detail}`);
+    if (st.cover_missing > 0) parts.push(`缺图 ${st.cover_missing}`);
     el.textContent = parts.length ? parts.join(" · ") : "";
   } catch (e) {}
+}
+
+// 窄屏放不下长占位文案，换成短的（桌面保留 HTML 里的完整说明）
+if (window.matchMedia("(max-width: 720px)").matches) {
+  const importInput = $("#import-input");
+  if (importInput) importInput.placeholder = "粘贴链接导入番号，支持多条";
+  const searchInput = $("#search-input");
+  if (searchInput && window.matchMedia("(max-width: 420px)").matches) {
+    searchInput.placeholder = "搜索番号 / 标题…";
+  }
 }
 
 (async function init() {

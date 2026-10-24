@@ -44,10 +44,62 @@ def _cover_state(cover: str) -> int:
     return 1
 
 
+# ──────────────────────── 条目状态分级 ────────────────────────
+# 按严重度从高到低：空白 > 缺详情 > 详情不全 > 图失效/缺图 > 完整。
+# 「缺图」只在详情齐了之后才单独成级——所以又缺图又缺详情时只会报「缺详情」。
+STATUS_EMPTY = "empty"                  # 空白：标题、详情、封面全无（多半从未抓过，或抓取彻底失败）
+STATUS_NO_DETAIL = "no_detail"          # 缺详情：详情区全空（封面有没有都归这一级）
+STATUS_PARTIAL = "partial"              # 详情不全：有详情，但缺关键项
+STATUS_COVER_FAILED = "cover_failed"    # 图失效：有封面链接但抓图失败
+STATUS_COVER_MISSING = "cover_missing"  # 缺图：详情齐全，但没有封面链接
+STATUS_OK = "ok"
+
+STATUS_LEVEL = {
+    STATUS_EMPTY: 4, STATUS_NO_DETAIL: 3, STATUS_PARTIAL: 2,
+    STATUS_COVER_FAILED: 1, STATUS_COVER_MISSING: 1, STATUS_OK: 0,
+}
+
+# 建议的重试动作：detail 重抓详情页 / cover 重抓封面图 / both 两者 / "" 无需
+RETRY_ACTION = {
+    STATUS_EMPTY: "both", STATUS_NO_DETAIL: "detail", STATUS_PARTIAL: "detail",
+    STATUS_COVER_FAILED: "cover", STATUS_COVER_MISSING: "detail", STATUS_OK: "",
+}
+
+# 判定「详情是否齐全」的关键项：(字段, 中文名)
+KEY_DETAIL_FIELDS = (
+    ("details", "原始详情"), ("release_date", "发行日期"), ("maker", "片商"),
+    ("actors", "演员"), ("genres", "类型"),
+)
+
+
+def _entry_state(entry: dict) -> tuple[str, list[str], str]:
+    """算出 (状态, 缺失的关键项, 建议重试动作)。"""
+    missing = [label for key, label in KEY_DETAIL_FIELDS if not entry[key]]
+    cover_state = entry["cover_state"]
+    blank = not any((
+        entry["title"], entry["cover"], entry["details"], entry["release_date"],
+        entry["maker"], entry["director"], entry["label"], entry["series"],
+        entry["duration"], entry["rating"], entry["actors"], entry["genres"],
+    ))
+    if blank:
+        status = STATUS_EMPTY
+    elif len(missing) == len(KEY_DETAIL_FIELDS):
+        status = STATUS_NO_DETAIL
+    elif missing:
+        status = STATUS_PARTIAL
+    elif cover_state == 3:
+        status = STATUS_COVER_FAILED
+    elif cover_state == 0:
+        status = STATUS_COVER_MISSING
+    else:
+        status = STATUS_OK
+    return status, missing, RETRY_ACTION[status]
+
+
 def _row_to_entry(row: sqlite3.Row, links: list[str], tags: list[dict]) -> dict:
     details = json.loads(row["details"] or "[]")
     cover = row["cover"] or ""
-    return {
+    entry = {
         "code": row["code"], "title": row["title"], "cover": cover,
         "cover_state": _cover_state(cover),
         "release_date": row["release_date"], "maker": row["maker"],
@@ -61,6 +113,9 @@ def _row_to_entry(row: sqlite3.Row, links: list[str], tags: list[dict]) -> dict:
         "created_at": row["created_at"], "updated_at": row["updated_at"],
         "links": links, "tags": tags,
     }
+    status, missing, retry = _entry_state(entry)
+    entry.update(status=status, status_level=STATUS_LEVEL[status], missing=missing, retry=retry)
+    return entry
 
 
 def count_entries() -> int:
@@ -255,14 +310,25 @@ def list_failed_links(limit: int = 5000) -> list[str]:
 
 
 def queue_stats() -> dict:
-    """抓取队列统计：未抓取数 / 失败数（排除冻结域名）。"""
+    """抓取队列统计：未抓取 / 失败（按链接，排除冻结域名）+ 异常分布（按条目）。
+
+    `no_detail`：详情区全空（含完全空白的条目，它们更该重抓详情）；
+    `cover_missing`：详情有但没封面链接。
+    """
     base = ("FROM entry_links el JOIN entries e ON e.code = el.code "
             "LEFT JOIN domain_state ds ON ds.domain = el.domain "
             "WHERE (ds.frozen IS NULL OR ds.frozen = 0) AND ")
     with db.conn() as conn:
         pending = conn.execute(f"SELECT count(*) {base} e.fetched = 0").fetchone()[0]
         failed = conn.execute(f"SELECT count(*) {base} e.fetched = 2").fetchone()[0]
-    return {"pending": pending, "failed": failed}
+        row = conn.execute(
+            "SELECT "
+            " SUM(CASE WHEN length(details) <= 2 AND release_date = '' AND maker = '' "
+            "      AND actors = '[]' AND genres = '[]' THEN 1 ELSE 0 END) AS no_detail, "
+            " SUM(CASE WHEN cover = '' AND length(details) > 2 THEN 1 ELSE 0 END) AS cover_missing "
+            "FROM entries").fetchone()
+    return {"pending": pending, "failed": failed,
+            "no_detail": row["no_detail"] or 0, "cover_missing": row["cover_missing"] or 0}
 
 
 # ──────────────────────── 详情代理补全 ────────────────────────

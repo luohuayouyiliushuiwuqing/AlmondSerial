@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="color-scheme" content="dark" />
   <title>动漫管理器</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
@@ -12,19 +14,35 @@
       <span class="logo">▶</span>
       <h1>动漫管理器</h1>
     </div>
+
     <form id="import-form" class="import-form">
       <input id="import-input" type="text" placeholder="粘贴链接导入番号，回车确认（支持多条，逗号/换行分隔）" autocomplete="off" />
       <button type="submit" class="btn btn-primary">导入</button>
     </form>
-    <div class="toolbar">
-      <input id="search-input" type="search" placeholder="搜索番号 / 标题 / 演员 / 片商…" autocomplete="off" />
-      <button id="file-import-btn" class="btn">导入文件</button>
-      <button id="db-btn" class="btn">数据库</button>
-      <button id="domains-btn" class="btn">域名</button>
-      <button id="proxy-btn" class="btn">代理</button>
-      <button id="export-btn" class="btn">导出 TXT</button>
+
+    <input id="search-input" type="search" placeholder="搜索番号 / 标题 / 演员 / 片商…" autocomplete="off" />
+
+    <!-- 唯一的功能入口：导入导出 + 全部配置都收在这张面板里 -->
+    <button id="set-toggle" class="btn btn-icon" aria-label="设置" aria-expanded="false">⚙</button>
+
+    <div id="set-sheet" class="sheet">
+      <div class="sheet-head">导入 / 导出</div>
+      <div class="sheet-group">
+        <button id="file-import-btn" class="btn">导入文件</button>
+        <button id="export-btn" class="btn">导出 TXT</button>
+      </div>
+      <div class="sheet-head">配置</div>
+      <div class="sheet-group">
+        <button id="db-btn" class="btn">数据库</button>
+        <button id="domains-btn" class="btn">域名</button>
+        <button id="proxy-btn" class="btn">代理</button>
+      </div>
     </div>
+
     <input id="file-input" type="file" accept=".txt,.csv,.html,.htm" hidden />
+
+    <!-- 窄屏：面板打开时挡住下方列表，避免点空白处误开条目 -->
+    <div id="sheet-scrim" class="sheet-scrim"></div>
   </header>
 
   <main id="main" class="main">
