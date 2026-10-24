@@ -12,6 +12,9 @@
 
 * { box-sizing: border-box; }
 
+/* 下面有几处自带 display 的块（.result/.list），作者样式会盖过 hidden 属性，这里统一兜住 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -21,7 +24,7 @@ html, body {
     "Microsoft YaHei", sans-serif;
 }
 
-.pop { width: 340px; padding: 14px; }
+.pop { width: 360px; padding: 14px; }
 
 .head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .logo {
@@ -67,6 +70,8 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
   font-weight: 600;
 }
 .btn.primary:hover { filter: brightness(1.1); }
+.btn.secondary { margin-top: 8px; font-size: 13px; }
+.btn.secondary:hover { background: var(--panel); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .status {
@@ -105,6 +110,57 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.list .badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--accent);
+  padding-top: 1px;
+}
+.list .badge.none { color: var(--text-dim); font-weight: 500; }
+.list .txt { min-width: 0; }
+.list .name {
+  font-size: 12px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.list .host { font-size: 11px; color: var(--text-dim); margin-top: 2px; word-break: break-all; }
+
+.skipped { margin-top: 10px; font-size: 11px; color: var(--text-dim); }
+.skipped summary { cursor: pointer; line-height: 1.5; }
+.skipped ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  max-height: 140px;
+  overflow-y: auto;
+  line-height: 1.55;
+  word-break: break-all;
 }
 
 .hint { font-size: 11px; color: var(--text-dim); opacity: 0.75; margin: 12px 0 0; line-height: 1.5; }

@@ -165,12 +165,12 @@ class TestAutoSync(Base):
 
 
 class TestTags(Base):
-    """演员类型：系统只按作品算频次参考，写入全靠用户点选。"""
+    """演员类型：系统只按作品算频次参考（且要占到 2/3），写入全靠用户点选。"""
 
     def setUp(self):
         super().setUp()
-        for code, genres in [("ABP-100", "巨乳, 单体"), ("SSIS-200", "巨乳"),
-                             ("SSIS-300", "企画")]:
+        for code, genres in [("ABP-100", "巨乳, 单体"), ("SSIS-200", "巨乳, 单体"),
+                             ("SSIS-300", "巨乳, 企画")]:
             entries.ingest_fetched({"url": f"https://a.com/{code}", "success": True,
                                     "details": [_detail("演员", "苍井空"),
                                                 _detail("类型", genres)]})
@@ -179,15 +179,48 @@ class TestTags(Base):
     def test_suggestions_sorted_by_frequency(self):
         s = actresses.suggest_tags(self.aid)
         self.assertEqual(s["total"], 3)
-        self.assertEqual(s["items"][0], {"name": "巨乳", "count": 2})
-        self.assertEqual({i["name"] for i in s["items"]}, {"巨乳", "单体", "企画"})
+        self.assertEqual(s["usable"], 3)
+        self.assertEqual([i["name"] for i in s["items"]], ["巨乳", "单体"])
+        self.assertEqual(s["items"][0], {"name": "巨乳", "count": 3})
+
+    def test_low_share_filtered_out(self):
+        """只占 1/3 的类型算偶发题材，不足以代表这个演员，不进参考。"""
+        self.assertNotIn("企画", [i["name"] for i in actresses.suggest_tags(self.aid)["items"]])
+
+    def test_two_thirds_boundary(self):
+        """15 部作品：占 10 部（正好 2/3）的留下，占 9 部的砍掉。"""
+        for i in range(15):
+            genres = []
+            if i < 10:
+                genres.append("甲")
+            if i < 9:
+                genres.append("乙")
+            entries.ingest_fetched({"url": f"https://a.com/BND-{i:03d}", "success": True,
+                                    "details": [_detail("演员", "边界"),
+                                                _detail("类型", ", ".join(genres))]})
+        aid = [a["id"] for a in actresses.list_actresses()["actresses"]
+               if a["name"] == "边界"][0]
+        s = actresses.suggest_tags(aid)
+        self.assertEqual(s["total"], 15)
+        self.assertEqual([i["name"] for i in s["items"]], ["甲"])
+        self.assertEqual(s["items"][0]["count"], 10)
+
+    def test_usable_zero_without_genres(self):
+        """有作品但一个类型都没抓到：分母仍是作品数，但没有可推荐的。"""
+        entries.ingest_fetched({"url": "https://a.com/NONE-001", "success": True,
+                                "details": [_detail("演员", "无类型")]})
+        aid = [a["id"] for a in actresses.list_actresses()["actresses"]
+               if a["name"] == "无类型"][0]
+        self.assertEqual(actresses.suggest_tags(aid),
+                         {"total": 1, "usable": 0, "items": []})
 
     def test_suggestions_empty_for_actress_without_entries(self):
         with db.conn() as conn:
             conn.execute("INSERT INTO actresses (name) VALUES ('孤零零')")
             new_id = conn.execute(
                 "SELECT id FROM actresses WHERE name='孤零零'").fetchone()[0]
-        self.assertEqual(actresses.suggest_tags(new_id), {"total": 0, "items": []})
+        self.assertEqual(actresses.suggest_tags(new_id),
+                         {"total": 0, "usable": 0, "items": []})
 
     def test_nothing_picked_by_default(self):
         self.assertEqual(actresses.get_actress(self.aid)["tags"], [])

@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cookies as cookie_ctl
-from . import actresses, db, entries, imgcache, importer, proxy, worker
+from . import actresses, db, entries, imgcache, importer, proxy, snapshots, worker
 from .fetcher import check_domain, fetch_page
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -127,6 +127,17 @@ class CaptureRequest(BaseModel):
     details: list[dict] = []
     image_base64: str = ""
     image_type: str = ""
+
+
+class SnapshotPage(BaseModel):
+    url: str
+    title: str = ""
+    thumbnail: str = ""
+    details: list[dict] = []
+
+
+class SnapshotBatchRequest(BaseModel):
+    pages: list[SnapshotPage] = []
 
 
 # ──────────────────────── 条目 ────────────────────────
@@ -275,6 +286,32 @@ def api_capture(req: CaptureRequest):
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"插件封面字节落缓存失败：{exc}")
     return {"ok": True, "entry": e}
+
+
+@app.post("/api/snapshots")
+def api_snapshots_save(req: SnapshotBatchRequest):
+    """浏览器插件批量抓标签页：一次写入全部页面。
+
+    - 能识别番号的页面照旧生成/合并番号条目；
+    - 识别不出的也留档到 page_snapshots（同一 url 覆盖上次快照）；
+    - 非法 url（非 http/https）计入 skipped，不落库。
+    """
+    return {"ok": True, **snapshots.save_batch([p.model_dump() for p in req.pages])}
+
+
+@app.get("/api/snapshots")
+def api_snapshots_list(q: str = "", limit: int = 200, offset: int = 0):
+    return {
+        "snapshots": snapshots.list_snapshots(limit or 200, max(0, offset), q),
+        "total": snapshots.count_snapshots(q),
+    }
+
+
+@app.delete("/api/snapshots")
+def api_snapshots_delete(url: str):
+    if not snapshots.delete_snapshot(url):
+        raise HTTPException(404, "快照不存在")
+    return {"ok": True}
 
 
 @app.post("/api/entry/{code}/enrich")

@@ -150,6 +150,17 @@ CREATE TABLE IF NOT EXISTS domain_state (
     ok          INTEGER NOT NULL DEFAULT 1,
     checked_at  TEXT NOT NULL DEFAULT ''
 );
+-- 网页快照：插件批量抓浏览器标签页时，无论能否识别出番号都留一份档（按 url 去重，只留最近一次）
+CREATE TABLE IF NOT EXISTS page_snapshots (
+    url         TEXT PRIMARY KEY,
+    title       TEXT NOT NULL DEFAULT '',
+    thumbnail   TEXT NOT NULL DEFAULT '',
+    domain      TEXT NOT NULL DEFAULT '',
+    code        TEXT NOT NULL DEFAULT '',
+    details     TEXT NOT NULL DEFAULT '[]',
+    captured_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_page_snapshots_captured ON page_snapshots(captured_at);
 """
 
 # 演员相关的表：脚本 build_actresses.py 直接复用这段 DDL，保证与线上一致

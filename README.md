@@ -35,6 +35,18 @@ SITE_COOKIES='{"fourhoi.com": "cf_clearance=xxx; foo=bar"}' \
 静态 TLS 指纹（`Fetcher`）→ JS 渲染（`DynamicFetcher`）→ 反 Cloudflare（`StealthyFetcher`，
 需 chromium 内核，用 `patchright install chromium` 安装）。
 
+## 浏览器插件（extension/）
+
+Chromium 内核浏览器加载「已解压的扩展程序」（选 `extension/` 目录），点工具栏图标弹出面板：
+
+- **抓取当前页**：读取当前标签页的标题 / 封面 / 「标签: 值」详情，直接存成番号条目。
+- **抓取全部标签页**：遍历所有窗口的全部标签页一次性抓取。能识别出番号的照旧入库；识别不出的
+  也留档到网页快照表（`page_snapshots`，按 url 去重，重抓覆盖）。以下页面自动排除：
+  - 系统页 / 非网页：`chrome://`、`edge://`、`about:`、`chrome-extension://`、`devtools://`、`file:` 等；
+  - 本机与内网：`localhost`、`*.localhost`、`127.0.0.0/8`、`::1`、`10/8`、`172.16/12`、`192.168/16`、
+    `169.254/16`、`*.local`，以及配置的后端地址自身；
+  - 重复的同地址标签页；无法注入的受限页面（如应用商店）会在「已跳过」里列明原因。
+
 ## 目录结构
 
 ```
@@ -46,7 +58,9 @@ AlmondSerial/
 │   ├── fields.py       # 「标签: 值」行解析
 │   ├── attributes.py   # 详情行 → 类型化字段归类
 │   ├── entries.py      # 条目 CRUD + 多链接归并 + 标签
+│   ├── snapshots.py    # 插件批量抓取的网页快照留档
 │   └── fetcher.py      # scrapling 抓取 + 元数据/详情提取
+├── extension/          # 浏览器插件（MV3，无构建）
 ├── static/             # 前端 SPA（无构建）
 ├── tests/              # 单元测试
 └── requirements.txt
@@ -67,6 +81,9 @@ AlmondSerial/
 | GET/POST/DELETE | `/api/tags` | 标签 CRUD |
 | POST/DELETE | `/api/entry/{code}/tags` | 条目标签关联 |
 | GET | `/api/export?fmt=txt\|json` | 导出 |
+| POST | `/api/snapshots` | `{pages:[{url,title,thumbnail,details}]}` 插件批量抓标签页 → 快照留档 + 番号入库 |
+| GET | `/api/snapshots?q=&limit=&offset=` | 网页快照列表（`q` 匹配 url/标题/番号/域名） |
+| DELETE | `/api/snapshots?url=` | 删除一条网页快照 |
 | GET | `/api/img?src=` | 服务端图片代理（封面跨域/防盗链兜底） |
 
 ## 测试

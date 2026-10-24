@@ -18,7 +18,8 @@
       <input id="base" type="text" placeholder="http://127.0.0.1:8000" autocomplete="off" spellcheck="false" />
     </label>
 
-    <button id="capture" class="btn primary">抓取当前页</button>
+    <button id="captureAll" class="btn primary">抓取全部标签页</button>
+    <button id="capture" class="btn secondary">抓取当前页</button>
 
     <div id="status" class="status" hidden></div>
 
@@ -30,7 +31,14 @@
       </div>
     </div>
 
-    <p class="hint">点击后读取当前标签页的标题 / 封面图 / 关键信息，直接存入后端。</p>
+    <ul id="list" class="list" hidden></ul>
+
+    <details id="skipped" class="skipped" hidden>
+      <summary id="skippedSummary"></summary>
+      <ul id="skippedList"></ul>
+    </details>
+
+    <p class="hint">「抓取全部标签页」会遍历浏览器所有窗口的标签页，自动跳过系统页面（chrome://、扩展页等）与本机地址（localhost、127.x、内网 IP），一页识别不出番号也会留档到网页快照。</p>
   </div>
   <script src="popup.js"></script>
 </body>
