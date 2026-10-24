@@ -1,5 +1,9 @@
 // 动漫管理器前端（无构建 SPA）
-const state = { entries: [], total: 0, q: "", tags: [], pending: [], queue: { pending: 0, failed: 0, queue: 0 } };
+// view: entries（视频）/ actresses（演员名单）/ actress（单个演员）三个主视图
+const state = {
+  view: "entries", entries: [], total: 0, q: "", actressQ: "", actressTotal: 0,
+  tags: [], pending: [], queue: { pending: 0, failed: 0, queue: 0 },
+};
 
 const $ = (sel) => document.querySelector(sel);
 const grid = $("#grid");
@@ -8,6 +12,13 @@ const stats = $("#stats-text");
 const modal = $("#modal");
 const modalBody = $("#modal-body");
 const toastEl = $("#toast");
+const actressGrid = $("#actress-grid");
+const actressEntries = $("#actress-entries");
+const actressName = $("#actress-name");
+const actressCount = $("#actress-count");
+const actressBack = $("#actress-back");
+const searchInput = $("#search-input");
+const importForm = $("#import-form");
 
 // ──────────────────────── 基础 ────────────────────────
 
@@ -49,6 +60,11 @@ async function loadEntries() {
   renderGrid();
 }
 
+// 数据变动后刷新当前视图：作品墙刷列表，演员视图重走一遍路由
+function refreshCurrentView() {
+  return state.view === "entries" ? loadEntries() : applyRoute();
+}
+
 function coverUrl(e, refresh) {
   if (!e.cover) return "";
   const q = `src=${encodeURIComponent(e.cover)}`;
@@ -61,10 +77,9 @@ function coverStateOf(e) {
   return Number.isInteger(e.cover_state) ? e.cover_state : (e.cover ? 1 : 0);
 }
 
-// 条目状态：等级由后端算好（empty / no_detail / partial / cover_missing / cover_failed / ok），
+// 条目状态：等级由后端算好（empty / partial / cover_missing / cover_failed / ok），
 // 前端只负责文案与色调。「empty」再按 fetched 细分「待抓取」和「抓取失败」。
 const STATUS_LABEL = {
-  no_detail: "缺详情",
   partial: "详情不全",
   cover_missing: "缺图",
   cover_failed: "图失效",
@@ -78,25 +93,6 @@ function statusLabel(e) {
 function statusTone(e) {
   if (e.status === "ok") return "";
   return e.status === "partial" || e.status === "cover_missing" ? "warn" : "bad";
-}
-
-function statusHint(e) {
-  switch (e.status) {
-    case "empty":
-      return e.fetched === 2
-        ? "抓了但什么都没拿到：源站反爬、链接失效，或该域名已被冻结（见「域名」面板）。"
-        : "从未抓到过内容：还在队列里，或所属域名被冻结。";
-    case "no_detail":
-      return "详情区是空的——可能没抓过详情，也可能某次抓到的不是详情页。缺图也归在这一级：先把详情抓回来。";
-    case "partial":
-      return "有详情，但关键项不全（见下方）。可重抓详情，或用「代理补全」填缺项。";
-    case "cover_missing":
-      return "详情齐全，但没有封面链接（详情页可能没给缩略图）——重抓详情页才有机会拿到。";
-    case "cover_failed":
-      return "有封面链接但抓不到图：源站反爬 / 防盗链 / 代理不可用。只需重抓封面图，不用动详情。";
-    default:
-      return "完整。";
-  }
 }
 
 function imgBadge(text, cls) {
@@ -226,27 +222,49 @@ function renderCard(e) {
 
 // ──────────────────────── 详情弹层 ────────────────────────
 
-function fieldRow(label, value, href) {
-  const row = document.createElement("div");
-  row.className = "field-row";
-  const lab = document.createElement("span");
-  lab.className = "field-label";
-  lab.textContent = label;
-  const val = document.createElement("span");
-  val.className = "field-value";
-  if (href && value) {
-    const a = document.createElement("a");
-    a.className = "field-link";
-    a.href = href;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = value;
-    val.appendChild(a);
-  } else {
-    val.textContent = value || "—";
+// 详情：原始详情拿到什么就列什么，不经过字段归类——拿到几项就显示几项，
+// 未识别的标签也照样列出来，值里的链接原样可点。
+function renderDetailRows(e) {
+  const sec = document.createElement("div");
+  sec.className = "detail-section";
+  const h = document.createElement("h3");
+  h.textContent = "详情";
+  sec.appendChild(h);
+
+  const rows = e.details || [];
+  if (!rows.length) {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "（原始详情为空，可重抓详情）";
+    sec.appendChild(none);
+    return sec;
   }
-  row.append(lab, val);
-  return row;
+
+  const table = document.createElement("table");
+  table.className = "raw-table";
+  for (const d of rows) {
+    const tr = document.createElement("tr");
+    const label = document.createElement("td");
+    label.textContent = d.label || "";
+    const value = document.createElement("td");
+    const text = (d.value || d.datetime || "").trim();
+    if (text) value.appendChild(document.createTextNode(text));
+    for (const l of (d.links || []).filter((x) => x && x.href)) {
+      if (value.childNodes.length) value.appendChild(document.createTextNode("、"));
+      const a = document.createElement("a");
+      a.className = "raw-link";
+      a.href = l.href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = l.text || l.href;
+      a.title = l.href;
+      value.appendChild(a);
+    }
+    tr.append(label, value);
+    table.appendChild(tr);
+  }
+  sec.appendChild(table);
+  return sec;
 }
 
 function chipList(items, cls = "chip") {
@@ -261,28 +279,7 @@ function chipList(items, cls = "chip") {
   return wrap;
 }
 
-function linkChipList(links, cls = "chip") {
-  const wrap = document.createElement("div");
-  wrap.className = "chip-list";
-  for (const l of links) {
-    const a = document.createElement("a");
-    a.className = cls + " chip-link";
-    a.href = l.href;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = l.text || l.href;
-    a.title = l.href;
-    wrap.appendChild(a);
-  }
-  return wrap;
-}
-
-function firstLink(e, field) {
-  const ls = e.field_links && e.field_links[field];
-  return ls && ls.length ? ls[0].href : "";
-}
-
-// 「状态」区块：等级 + 说明 + 缺失项 + 按等级给出的重试动作
+// 「状态」区块：等级 + 缺失项 + 重试动作，三者排在同一行（窄屏才折行）
 function renderStatusSection(e) {
   const sec = document.createElement("div");
   sec.className = "detail-section status-section";
@@ -293,20 +290,18 @@ function renderStatusSection(e) {
   const tag = document.createElement("span");
   tag.className = "status-tag " + statusTone(e);
   tag.textContent = statusLabel(e);
-  const hint = document.createElement("span");
-  hint.className = "status-hint";
-  hint.textContent = statusHint(e);
-  line.append(tag, hint);
-  sec.append(h, line);
+  line.appendChild(tag);
 
   if (e.missing && e.missing.length) {
     const chips = chipList(e.missing.map((m) => "缺" + m));
     chips.classList.add("status-missing");
-    sec.appendChild(chips);
+    line.appendChild(chips);
   }
 
   const btn = retryButton(e);
-  if (btn) sec.appendChild(btn);
+  if (btn) line.appendChild(btn);
+
+  sec.append(h, line);
   return sec;
 }
 
@@ -329,7 +324,7 @@ function retryButton(e) {
         const el = modalBody.querySelector(".detail-cover");
         if (el) reloadCover(e, el);
         toast("已重新抓取封面");
-        await loadEntries();
+        await refreshCurrentView();
         return;
       }
       await api(`/api/entry/${encodeURIComponent(e.code)}/fetch`, { method: "POST" });
@@ -382,35 +377,9 @@ function renderDetail(e) {
   title.textContent = e.title || "（未抓取标题）";
   info.append(code, title);
 
-  const props = document.createElement("div");
-  props.className = "detail-props";
-  const propFields = [
-    ["发行日期", e.release_date, ""],
-    ["片商", e.maker, firstLink(e, "maker")],
-    ["导演", e.director, firstLink(e, "director")],
-    ["厂牌", e.label, firstLink(e, "label")],
-    ["系列", e.series, firstLink(e, "series")],
-    ["时长", e.duration, ""],
-    ["评分", e.rating, ""],
-  ];
-  for (const [label, value, href] of propFields) {
-    if (value) props.appendChild(fieldRow(label, value, href));
-  }
-  info.appendChild(props);
-
   head.append(cover, info);
 
-  const actors = document.createElement("div");
-  actors.className = "detail-section";
-  actors.innerHTML = "<h3>演员</h3>";
-  const actorLinks = (e.field_links && e.field_links.actors) || [];
-  actors.appendChild(actorLinks.length ? linkChipList(actorLinks) : chipList(e.actors.length ? e.actors : ["—"]));
-
-  const genres = document.createElement("div");
-  genres.className = "detail-section";
-  genres.innerHTML = "<h3>类型</h3>";
-  const genreLinks = (e.field_links && e.field_links.genres) || [];
-  genres.appendChild(genreLinks.length ? linkChipList(genreLinks) : chipList(e.genres.length ? e.genres : ["—"]));
+  const details = renderDetailRows(e);
 
   const links = document.createElement("div");
   links.className = "detail-section";
@@ -469,37 +438,6 @@ function renderDetail(e) {
   tagWrap.appendChild(tagSelect);
   tags.appendChild(tagWrap);
 
-  const raw = document.createElement("div");
-  raw.className = "detail-section";
-  raw.innerHTML = "<h3>原始详情</h3>";
-  const rawTable = document.createElement("table");
-  rawTable.className = "raw-table";
-  for (const d of e.details || []) {
-    const tr = document.createElement("tr");
-    const td1 = document.createElement("td");
-    td1.textContent = d.label;
-    const td2 = document.createElement("td");
-    const dlinks = (d.links || []).filter((l) => l && l.href);
-    if (dlinks.length) {
-      dlinks.forEach((l, i) => {
-        const a = document.createElement("a");
-        a.className = "raw-link";
-        a.href = l.href;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.textContent = l.text || l.href;
-        td2.appendChild(a);
-        if (i < dlinks.length - 1) td2.appendChild(document.createTextNode("、"));
-      });
-    } else {
-      td2.textContent = d.value || d.datetime || "";
-    }
-    tr.append(td1, td2);
-    rawTable.appendChild(tr);
-  }
-  if (!(e.details || []).length) raw.innerHTML = "<h3>原始详情</h3><p class='hint'>无</p>";
-  else raw.appendChild(rawTable);
-
   const actions = document.createElement("div");
   actions.className = "detail-actions";
   const fetchBtn = document.createElement("button");
@@ -512,7 +450,7 @@ function renderDetail(e) {
       await api(`/api/entry/${encodeURIComponent(e.code)}/fetch`, { method: "POST" });
       toast("抓取完成");
       openDetail(e.code);
-      loadEntries();
+      refreshCurrentView();
     } finally {
       fetchBtn.disabled = false;
       fetchBtn.textContent = "重新抓取";
@@ -529,7 +467,7 @@ function renderDetail(e) {
       await api(`/api/entry/${encodeURIComponent(e.code)}/enrich`, { method: "POST" });
       toast("补全完成");
       openDetail(e.code);
-      loadEntries();
+      refreshCurrentView();
     } catch (err) {
       toast("补全失败：" + err.message);
     } finally {
@@ -549,13 +487,13 @@ function renderDetail(e) {
     await api(`/api/entry/${encodeURIComponent(e.code)}`, { method: "DELETE" });
     toast("已删除");
     closeModal();
-    loadEntries();
+    refreshCurrentView();
   });
   actions.append(fetchBtn, enrichBtn, editBtn, delBtn);
 
   const parts = [head];
   if (e.status && e.status !== "ok") parts.push(renderStatusSection(e));
-  parts.push(actors, genres, links, tags, raw, actions);
+  parts.push(details, links, tags, actions);
   modalBody.append(...parts);
 }
 
@@ -614,6 +552,161 @@ function renderEdit(e) {
 function closeModal() {
   modal.hidden = true;
   modalBody.innerHTML = "";
+}
+
+// ──────────────────────── 视频 / 演员 视图 ────────────────────────
+
+// 视频墙与演员墙是两个平级主视图，靠主区顶部那排标签切换；
+// 单个演员的作品页算演员视图的下钻层，标签仍停在「演员」。
+// 当前视图记在 hash 里，刷新和浏览器后退都能回到原处。
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  const m = raw.match(/^actress\/(\d+)$/);
+  if (m) return { view: "actress", id: Number(m[1]) };
+  if (raw === "actresses") return { view: "actresses" };
+  return { view: "entries" };
+}
+
+// 横向切视图 / 下钻进演员页 = 新增历史；向上返回 = 替换，退回时不再停在刚离开的页
+let drilledFromList = false;
+
+function go(view, id, replace = false) {
+  const hash = view === "actress" ? `#/actress/${id}`
+    : view === "actresses" ? "#/actresses" : "#/entries";
+  if (location.hash === hash) applyRoute();
+  else if (replace) location.replace(location.pathname + location.search + hash);
+  else location.hash = hash;
+}
+
+function setView(view) {
+  state.view = view;
+  document.body.dataset.view = view;
+
+  for (const name of ["entries", "actresses", "actress"]) {
+    $(`#view-${name}`).hidden = name !== view;
+  }
+  const tabOf = view === "actress" ? "actresses" : view;
+  for (const tab of document.querySelectorAll(".view-tab")) {
+    tab.classList.toggle("active", tab.dataset.view === tabOf);
+  }
+
+  // 顶部搜索框给两个列表视图共用；演员作品页没有搜索语义，先收起
+  const hasSearch = view !== "actress";
+  searchInput.hidden = !hasSearch;
+  if (hasSearch) {
+    searchInput.value = view === "actresses" ? state.actressQ : state.q;
+    const narrow = window.matchMedia("(max-width: 420px)").matches;
+    searchInput.placeholder = view === "actresses"
+      ? "搜索演员…"
+      : narrow ? "搜索番号 / 标题…" : "搜索番号 / 标题 / 演员 / 片商…";
+  }
+  // 导入只作用于作品
+  importForm.hidden = view !== "entries";
+  // 单个演员页头部已经写了「N 部作品」，这里不重复
+  stats.textContent = view === "actress" ? ""
+    : view === "actresses" ? `共 ${state.actressTotal} 位演员` : `共 ${state.total} 条`;
+}
+
+async function applyRoute() {
+  const route = parseHash();
+  setView(route.view);
+  if (route.view === "actresses") await loadActresses();
+  else if (route.view === "actress") await loadActressPage(route.id);
+  else await loadEntries();
+}
+
+async function loadActresses() {
+  actressGrid.textContent = "";
+  actressGrid.appendChild(hintLine("加载中…"));
+
+  let data;
+  try {
+    data = await api(`/api/actresses?q=${encodeURIComponent(state.actressQ)}`);
+  } catch (e) {
+    actressGrid.textContent = "";
+    actressGrid.appendChild(hintLine("加载失败：" + e.message));
+    return;
+  }
+  if (state.view !== "actresses") return; // 加载期间已切走
+
+  actressGrid.textContent = "";
+  if (!data.ready) {
+    actressGrid.appendChild(hintLine(
+      "演员数据还没初始化：在项目目录运行 build_actresses.py --apply，然后刷新页面。"));
+    return;
+  }
+  state.actressTotal = data.total;
+  stats.textContent = `共 ${data.total} 位演员`;
+  if (!data.actresses.length) {
+    actressGrid.appendChild(hintLine(state.actressQ ? "没有匹配的演员" : "还没有演员数据"));
+    return;
+  }
+  for (const a of data.actresses) actressGrid.appendChild(renderActressCard(a));
+}
+
+function renderActressCard(a) {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "actress-card";
+
+  const avatar = document.createElement("span");
+  avatar.className = "actress-avatar";
+  avatar.textContent = firstGlyph(a.name);
+
+  const body = document.createElement("span");
+  body.className = "actress-card-body";
+  const name = document.createElement("span");
+  name.className = "actress-card-name";
+  name.textContent = a.name;
+  const count = document.createElement("span");
+  count.className = "actress-card-count";
+  count.textContent = `${a.entries} 部作品`;
+  body.append(name, count);
+
+  card.append(avatar, body);
+  card.addEventListener("click", () => {
+    drilledFromList = true;
+    go("actress", a.id);
+  });
+  return card;
+}
+
+// 没有头像数据，用名字首字顶位（日文名取第一个字符即可）
+function firstGlyph(name) {
+  return Array.from(String(name || "").trim())[0] || "?";
+}
+
+async function loadActressPage(id) {
+  actressName.textContent = "";
+  actressCount.textContent = "";
+  actressEntries.textContent = "";
+  actressEntries.appendChild(hintLine("加载中…"));
+
+  let data;
+  try {
+    data = await api(`/api/actress/${id}`);
+  } catch (e) {
+    toast("打开失败：" + e.message);
+    go("actresses", undefined, true);
+    return;
+  }
+  if (state.view !== "actress") return;
+
+  actressName.textContent = data.name;
+  actressCount.textContent = `${data.total} 部作品`;
+  actressEntries.textContent = "";
+  if (!data.entries.length) {
+    actressEntries.appendChild(hintLine("这位演员名下还没有作品。"));
+    return;
+  }
+  for (const e of data.entries) actressEntries.appendChild(renderCard(e));
+}
+
+function hintLine(text) {
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent = text;
+  return p;
 }
 
 // ──────────────────────── 导入 / 补抓 ────────────────────────
@@ -1258,14 +1351,36 @@ $("#import-form").addEventListener("submit", (ev) => {
   input.value = "";
 });
 
+// 顶部搜索框按当前视图分流：演员视图搜演员，其余搜作品
 let searchTimer = null;
-$("#search-input").addEventListener("input", (ev) => {
+searchInput.addEventListener("input", (ev) => {
   clearTimeout(searchTimer);
+  const value = ev.target.value.trim();
   searchTimer = setTimeout(() => {
-    state.q = ev.target.value.trim();
-    loadEntries();
+    if (state.view === "actresses") {
+      state.actressQ = value;
+      loadActresses();
+    } else {
+      state.q = value;
+      loadEntries();
+    }
   }, 250);
 });
+
+for (const tab of document.querySelectorAll(".view-tab")) {
+  tab.addEventListener("click", () => go(tab.dataset.view));
+}
+// 「← 全部演员」：从列表下钻进来的就真退一步，历史里不会留下重复的列表记录；
+// 直接打开某个演员页（没有上一层）则原地替换成列表
+actressBack.addEventListener("click", () => {
+  if (drilledFromList) {
+    drilledFromList = false;
+    history.back();
+  } else {
+    go("actresses", undefined, true);
+  }
+});
+window.addEventListener("hashchange", applyRoute);
 
 $("#export-btn").addEventListener("click", exportTxt);
 $("#db-btn").addEventListener("click", () => openDbPanel());
@@ -1330,33 +1445,28 @@ async function updateQueueStatus() {
     if (st.queue > 0) parts.push(`抓取中 ${st.queue} 条`);
     if (st.pending > 0) parts.push(`待抓取 ${st.pending}`);
     if (st.failed > 0) parts.push(`失败 ${st.failed}`);
-    if (st.no_detail > 0) parts.push(`缺详情 ${st.no_detail}`);
+    if (st.partial > 0) parts.push(`详情不全 ${st.partial}`);
     if (st.cover_missing > 0) parts.push(`缺图 ${st.cover_missing}`);
     el.textContent = parts.length ? parts.join(" · ") : "";
   } catch (e) {}
 }
 
-// 窄屏放不下长占位文案，换成短的（桌面保留 HTML 里的完整说明）
+// 窄屏放不下长占位文案，换成短的（桌面保留 HTML 里的完整说明）；
+// 搜索框的占位文案随视图变，统一在 setView 里给出
 if (window.matchMedia("(max-width: 720px)").matches) {
   const importInput = $("#import-input");
   if (importInput) importInput.placeholder = "粘贴链接导入番号，支持多条";
-  const searchInput = $("#search-input");
-  if (searchInput && window.matchMedia("(max-width: 420px)").matches) {
-    searchInput.placeholder = "搜索番号 / 标题…";
-  }
 }
 
 (async function init() {
   try {
-    const [tags] = await Promise.all([
-      api("/api/tags"),
-      loadEntries(),
-    ]);
+    const tags = await api("/api/tags");
     state.tags = tags.tags;
+    await applyRoute();
     updateQueueStatus();
-    // 后台抓取由服务端 worker 进行，前端定时刷新即可看到进度
+    // 后台抓取由服务端 worker 进行，前端定时刷新即可看到进度；演员视图不轮询作品列表
     setInterval(() => {
-      loadEntries().catch(() => {});
+      if (state.view === "entries") loadEntries().catch(() => {});
       updateQueueStatus();
     }, 3000);
   } catch (e) {

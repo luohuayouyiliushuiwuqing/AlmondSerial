@@ -45,36 +45,35 @@ def _cover_state(cover: str) -> int:
 
 
 # ──────────────────────── 条目状态分级 ────────────────────────
-# 按严重度从高到低：空白 > 缺详情 > 详情不全 > 图失效/缺图 > 完整。
-# 「缺图」只在详情齐了之后才单独成级——所以又缺图又缺详情时只会报「缺详情」。
+# 按严重度从高到低：空白 > 详情不全 > 图失效/缺图 > 完整。
+# 「详情到底拿到没有」只认两样：标题 + 发行日期。详情页本来就不保证项项齐全（缺片商、
+# 缺演员都属正常，不算异常）；但发行日期只可能来自详情页——拿到它就说明详情页上能拿的
+# 都拿到了。标题可能来自 OG，光有标题不足以证明抓过详情，所以缺任一项都算详情不全。
+# 「缺图」只在详情齐了之后才单独成级，不会盖住详情的问题。
 STATUS_EMPTY = "empty"                  # 空白：标题、详情、封面全无（多半从未抓过，或抓取彻底失败）
-STATUS_NO_DETAIL = "no_detail"          # 缺详情：详情区全空（封面有没有都归这一级）
-STATUS_PARTIAL = "partial"              # 详情不全：有详情，但缺关键项
-STATUS_COVER_FAILED = "cover_failed"    # 图失效：有封面链接但抓图失败
-STATUS_COVER_MISSING = "cover_missing"  # 缺图：详情齐全，但没有封面链接
+STATUS_PARTIAL = "partial"              # 详情不全：缺标题或发行日期（封面有没有都归这一级）
+STATUS_COVER_FAILED = "cover_failed"    # 图失效：详情齐了，但抓图失败
+STATUS_COVER_MISSING = "cover_missing"  # 缺图：详情齐了，但没有封面链接
 STATUS_OK = "ok"
 
 STATUS_LEVEL = {
-    STATUS_EMPTY: 4, STATUS_NO_DETAIL: 3, STATUS_PARTIAL: 2,
+    STATUS_EMPTY: 3, STATUS_PARTIAL: 2,
     STATUS_COVER_FAILED: 1, STATUS_COVER_MISSING: 1, STATUS_OK: 0,
 }
 
 # 建议的重试动作：detail 重抓详情页 / cover 重抓封面图 / both 两者 / "" 无需
 RETRY_ACTION = {
-    STATUS_EMPTY: "both", STATUS_NO_DETAIL: "detail", STATUS_PARTIAL: "detail",
+    STATUS_EMPTY: "both", STATUS_PARTIAL: "detail",
     STATUS_COVER_FAILED: "cover", STATUS_COVER_MISSING: "detail", STATUS_OK: "",
 }
 
-# 判定「详情是否齐全」的关键项：(字段, 中文名)
-KEY_DETAIL_FIELDS = (
-    ("details", "原始详情"), ("release_date", "发行日期"), ("maker", "片商"),
-    ("actors", "演员"), ("genres", "类型"),
-)
+# 判定「详情是否拿到」的两个字段：(字段, 中文名)。任一为空即详情不全
+DETAIL_PROOF_FIELDS = (("title", "标题"), ("release_date", "发行日期"))
 
 
 def _entry_state(entry: dict) -> tuple[str, list[str], str]:
     """算出 (状态, 缺失的关键项, 建议重试动作)。"""
-    missing = [label for key, label in KEY_DETAIL_FIELDS if not entry[key]]
+    missing = [label for key, label in DETAIL_PROOF_FIELDS if not entry[key]]
     cover_state = entry["cover_state"]
     blank = not any((
         entry["title"], entry["cover"], entry["details"], entry["release_date"],
@@ -83,8 +82,6 @@ def _entry_state(entry: dict) -> tuple[str, list[str], str]:
     ))
     if blank:
         status = STATUS_EMPTY
-    elif len(missing) == len(KEY_DETAIL_FIELDS):
-        status = STATUS_NO_DETAIL
     elif missing:
         status = STATUS_PARTIAL
     elif cover_state == 3:
@@ -145,6 +142,20 @@ def list_entries(limit: int | None = None, offset: int = 0, q: str = "") -> list
             ).fetchall()
         return [_row_to_entry(r, _links_for(conn, r["code"]), _entry_tags(conn, r["code"]))
                 for r in rows]
+
+
+def list_by_codes(codes: list[str]) -> list[dict]:
+    """按番号批量取条目（保持传入顺序，已不存在的跳过）。"""
+    wanted = [c for c in (codes or []) if c]
+    if not wanted:
+        return []
+    marks = ",".join("?" * len(wanted))
+    with db.conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM entries WHERE code IN ({marks})", wanted).fetchall()
+        by_code = {r["code"]: r for r in rows}
+        return [_row_to_entry(by_code[c], _links_for(conn, c), _entry_tags(conn, c))
+                for c in wanted if c in by_code]
 
 
 def get_entry(code: str) -> dict | None:
@@ -312,8 +323,9 @@ def list_failed_links(limit: int = 5000) -> list[str]:
 def queue_stats() -> dict:
     """抓取队列统计：未抓取 / 失败（按链接，排除冻结域名）+ 异常分布（按条目）。
 
-    `no_detail`：详情区全空（含完全空白的条目，它们更该重抓详情）；
-    `cover_missing`：详情有但没封面链接。
+    `partial`：详情不全（缺标题或发行日期）；完全空白的条目不重复计入，它们已经
+    体现在上面按链接统计的未抓取 / 失败里；
+    `cover_missing`：详情齐了（有标题和发行日期）但没有封面链接。
     """
     base = ("FROM entry_links el JOIN entries e ON e.code = el.code "
             "LEFT JOIN domain_state ds ON ds.domain = el.domain "
@@ -323,12 +335,15 @@ def queue_stats() -> dict:
         failed = conn.execute(f"SELECT count(*) {base} e.fetched = 2").fetchone()[0]
         row = conn.execute(
             "SELECT "
-            " SUM(CASE WHEN length(details) <= 2 AND release_date = '' AND maker = '' "
-            "      AND actors = '[]' AND genres = '[]' THEN 1 ELSE 0 END) AS no_detail, "
-            " SUM(CASE WHEN cover = '' AND length(details) > 2 THEN 1 ELSE 0 END) AS cover_missing "
+            " SUM(CASE WHEN (title = '' OR release_date = '') AND (cover <> '' "
+            "      OR length(details) > 2 OR maker <> '' OR director <> '' OR label <> '' "
+            "      OR series <> '' OR duration <> '' OR rating <> '' "
+            "      OR actors <> '[]' OR genres <> '[]') THEN 1 ELSE 0 END) AS partial, "
+            " SUM(CASE WHEN cover = '' AND title <> '' AND release_date <> '' "
+            "      THEN 1 ELSE 0 END) AS cover_missing "
             "FROM entries").fetchone()
     return {"pending": pending, "failed": failed,
-            "no_detail": row["no_detail"] or 0, "cover_missing": row["cover_missing"] or 0}
+            "partial": row["partial"] or 0, "cover_missing": row["cover_missing"] or 0}
 
 
 # ──────────────────────── 详情代理补全 ────────────────────────

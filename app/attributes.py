@@ -165,6 +165,49 @@ def classify(details: list[dict]) -> dict:
     return out
 
 
+# 演员链接里的噪声文本（列表页/更多入口），不是名字
+_NAME_NOISE = {"更多", "全部", "查看全部", "一覧", "その他", "more", "all"}
+_NAME_MAX_LEN = 40
+
+
+def _clean_names(items) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        name = re.sub(r"\s+", " ", (raw or "").replace("\u3000", " ")).strip()
+        if not name or name in _NAME_NOISE or len(name) > _NAME_MAX_LEN:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def actress_names(details: list[dict]) -> list[str]:
+    """从详情行里取出演员名，用于维护 actresses 名单。
+
+    两条判据同时生效：
+    1. 标签命中演员字段（演员/女优/actress/actresses/cast...）→ 取其文本值；
+    2. 该行任意链接的 href 含 `actresses` → 取链接文字，无论标签写的是什么。
+    """
+    names: list[str] = []
+    for row in details or []:
+        if not isinstance(row, dict):
+            continue
+        links = row.get("links") or []
+        label = _norm_label(row.get("label") or "")
+        if _resolve_field(label, links) == "actors":
+            names.extend(_split_list(row.get("value") or ""))
+        for l in links:
+            if not isinstance(l, dict):
+                continue
+            if link_kind(l.get("href")) == "actor":
+                names.append(l.get("text") or "")
+    return _clean_names(names)
+
+
 def field_links(details: list[dict]) -> dict[str, list[dict]]:
     """从详情行提取「类型化字段名 → 链接列表」，供前端把文字渲染成可跳转链接。
 

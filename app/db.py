@@ -152,6 +152,36 @@ CREATE TABLE IF NOT EXISTS domain_state (
 );
 """
 
+# 演员相关的表：脚本 build_actresses.py 直接复用这段 DDL，保证与线上一致
+ACTRESS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS actresses (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+-- 演员标签字典：候选池来自各条目详情的「类型」，具体给谁打由人指定
+CREATE TABLE IF NOT EXISTS actress_tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+-- 演员 ↔ 标签（多对多）
+CREATE TABLE IF NOT EXISTS actress_tag_map (
+    actress_id INTEGER NOT NULL,
+    tag_id     INTEGER NOT NULL,
+    PRIMARY KEY (actress_id, tag_id)
+);
+-- 条目 ↔ 演员（多对多）：由详情里的演员数据自动推导，页面只读
+CREATE TABLE IF NOT EXISTS entry_actress (
+    code       TEXT NOT NULL,
+    actress_id INTEGER NOT NULL,
+    PRIMARY KEY (code, actress_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entry_actress_actress ON entry_actress(actress_id);
+"""
+
+_SCHEMA = _SCHEMA + ACTRESS_SCHEMA
+
 _ENSURE_LOCK = threading.Lock()
 _ENSURED: set[str] = set()
 

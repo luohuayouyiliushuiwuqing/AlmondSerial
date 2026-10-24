@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.attributes import classify, link_kind
+from app.attributes import actress_names, classify, link_kind
 
 
 def _field(label, value="", **kw):
@@ -97,6 +97,46 @@ class TestLinkValues(unittest.TestCase):
         self.assertEqual(out["maker"], "某片商")
         self.assertEqual(out["director"], "某导演")
         self.assertEqual(out["label"], "某厂牌")
+
+
+class TestActressNames(unittest.TestCase):
+    def test_label_keyword(self):
+        details = [
+            {"label": "演员", "value": "苍井空, 三上悠亜", "links": []},
+            {"label": "类型", "value": "剧情", "links": []},
+        ]
+        self.assertEqual(actress_names(details), ["苍井空", "三上悠亜"])
+
+    def test_actresses_link_without_label(self):
+        # 标签不是演员，但链接指向 /actresses/ → 仍算演员名
+        details = [
+            {"label": "相关", "value": "", "links": [
+                {"text": "演员甲", "href": "https://x.com/dm72/cn/actresses/1"},
+                {"text": "某片商", "href": "https://x.com/dm825/cn/makers/1"},
+            ]},
+        ]
+        self.assertEqual(actress_names(details), ["演员甲"])
+
+    def test_same_name_deduped_across_rows(self):
+        details = [
+            {"label": "演员", "value": "演员甲", "links": []},
+            {"label": "演员", "value": "", "links": [
+                {"text": "演员甲", "href": "https://x.com/cn/actresses/9"}]},
+        ]
+        self.assertEqual(actress_names(details), ["演员甲"])
+
+    def test_noise_and_empty_ignored(self):
+        details = [
+            {"label": "演员", "value": "", "links": [
+                {"text": "更多", "href": "https://x.com/cn/actresses/all"},
+                {"text": "  ", "href": "https://x.com/cn/actresses/2"},
+            ]},
+        ]
+        self.assertEqual(actress_names(details), [])
+
+    def test_no_actors(self):
+        self.assertEqual(actress_names([{"label": "类型", "value": "剧情", "links": []}]), [])
+        self.assertEqual(actress_names([]), [])
 
 
 class TestLinkKind(unittest.TestCase):

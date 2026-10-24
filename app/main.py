@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cookies as cookie_ctl
-from . import db, entries, imgcache, importer, proxy, worker
+from . import actresses, db, entries, imgcache, importer, proxy, worker
 from .fetcher import check_domain, fetch_page
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -180,6 +180,23 @@ def api_delete_entry(code: str):
     if not entries.delete_entry(code):
         raise HTTPException(404, "条目不存在")
     return {"ok": True}
+
+
+# ──────────────────────── 演员 ────────────────────────
+
+@app.get("/api/actresses")
+def api_actresses(q: str = "", limit: int = 200, offset: int = 0):
+    """演员名单，带各自作品数；ready=False 表示演员数据还没初始化。"""
+    return actresses.list_actresses(q, limit, offset)
+
+
+@app.get("/api/actress/{actress_id}")
+def api_actress(actress_id: int):
+    """单个演员 + 他/她的全部作品（关联自动推导，只读）。"""
+    a = actresses.get_actress(actress_id)
+    if a is None:
+        raise HTTPException(404, "演员不存在或数据未初始化")
+    return a
 
 
 # ──────────────────────── 抓取 ────────────────────────

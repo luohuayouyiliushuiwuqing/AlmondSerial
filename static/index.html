@@ -46,15 +46,36 @@
   </header>
 
   <main id="main" class="main">
-    <div class="stats">
-      <span id="stats-text">加载中…</span>
-      <span id="queue-text" class="queue-text"></span>
-    </div>
-    <div id="grid" class="grid"></div>
-    <div id="empty" class="empty" hidden>
-      <p>还没有条目</p>
-      <p class="hint">在上方粘贴包含番号的链接即可导入</p>
-    </div>
+    <!-- 视频 / 演员 两个平级主视图，靠这排标签切换 -->
+    <nav class="view-switch">
+      <button type="button" class="view-tab active" data-view="entries">视频</button>
+      <button type="button" class="view-tab" data-view="actresses">演员</button>
+      <div class="stats">
+        <span id="stats-text">加载中…</span>
+        <span id="queue-text" class="queue-text"></span>
+      </div>
+    </nav>
+
+    <section id="view-entries" class="view">
+      <div id="grid" class="grid"></div>
+      <div id="empty" class="empty" hidden>
+        <p>还没有条目</p>
+        <p class="hint">在上方粘贴包含番号的链接即可导入</p>
+      </div>
+    </section>
+
+    <section id="view-actresses" class="view" hidden>
+      <div id="actress-grid" class="actress-grid"></div>
+    </section>
+
+    <section id="view-actress" class="view" hidden>
+      <div class="actress-head">
+        <button type="button" id="actress-back" class="btn btn-mini">← 全部演员</button>
+        <h2 id="actress-name"></h2>
+        <span id="actress-count" class="actress-count"></span>
+      </div>
+      <div id="actress-entries" class="grid"></div>
+    </section>
   </main>
 
   <div id="modal" class="modal" hidden>

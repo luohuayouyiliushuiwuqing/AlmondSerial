@@ -1,4 +1,8 @@
-"""条目状态分级：空白 / 缺详情 / 详情不全 / 缺图 / 图失效 / 完整，以及各自建议的重试动作。"""
+"""条目状态分级：空白 / 详情不全 / 缺图 / 图失效 / 完整，以及各自建议的重试动作。
+
+「详情是否拿到」只看标题 + 发行日期：发行日期只可能来自详情页，拿到它就说明详情页上
+能拿的都拿到了；详情页没给的项（片商、演员、类型等）不算异常。
+"""
 
 import shutil
 import tempfile
@@ -8,12 +12,14 @@ from pathlib import Path
 from app import db, entries, imgcache
 
 COVER = "https://img.example/a.jpg"
+# 详情页给的一整套信息（实际站点常常只给其中几项）
 FULL_DETAILS = [
     {"label": "发行日期", "value": "2020-01-01", "links": [], "datetime": ""},
     {"label": "片商", "value": "片商A", "links": [], "datetime": ""},
     {"label": "演员", "value": "甲, 乙", "links": [], "datetime": ""},
     {"label": "类型", "value": "剧情, 恋爱", "links": [], "datetime": ""},
 ]
+DATE_ONLY = [d for d in FULL_DETAILS if d["label"] == "发行日期"]
 
 
 def _meta(url, **over):
@@ -45,7 +51,7 @@ class TestStatusLevels(Base):
         entries.import_links(["https://a.com/ABP-123"])
         e = entries.get_entry("ABP-123")
         self.assertEqual((e["status"], e["retry"], e["fetched"]), ("empty", "both", 0))
-        self.assertEqual(e["status_level"], 4)
+        self.assertEqual(e["status_level"], 3)
 
     def test_empty_after_failed_fetch(self):
         entries.import_links(["https://a.com/ABP-123"])
@@ -53,31 +59,38 @@ class TestStatusLevels(Base):
         e = entries.get_entry("ABP-123")
         self.assertEqual((e["status"], e["retry"], e["fetched"]), ("empty", "both", 2))
 
-    def test_cover_but_no_detail_reports_missing_detail(self):
-        """又缺图又缺详情 → 报「缺详情」，不能只报缺图。"""
+    def test_no_date_is_partial_even_with_cover(self):
+        """只有标题（可能来自 OG）没有日期 → 详情不全，且不能只报缺图。"""
         entries.import_links(["https://a.com/ABP-123"])
         entries.ingest_fetched(_meta("https://a.com/ABP-123", details=[]))
         status, missing, retry, cover_state = self._status()
-        self.assertEqual(status, "no_detail")
+        self.assertEqual(status, "partial")
+        self.assertEqual(missing, ["发行日期"])
         self.assertEqual(retry, "detail")
         self.assertEqual(cover_state, 1)  # 封面链接有、图未抓
-        self.assertIn("片商", missing)
-        self.assertIn("类型", missing)
-
-    def test_detail_but_no_cover_still_missing_detail(self):
-        entries.import_links(["https://a.com/ABP-123"])
-        entries.ingest_fetched(_meta("https://a.com/ABP-123", details=[], thumbnail=""))
-        self.assertEqual(self._status()[0], "no_detail")
-
-    def test_partial_detail(self):
-        entries.import_links(["https://a.com/ABP-123"])
-        entries.ingest_fetched(_meta("https://a.com/ABP-123",
-                                     details=[d for d in FULL_DETAILS if d["label"] != "类型"]))
-        status, missing, retry, _ = self._status()
-        self.assertEqual(status, "partial")
-        self.assertEqual(missing, ["类型"])
-        self.assertEqual(retry, "detail")
         self.assertEqual(entries.get_entry("ABP-123")["status_level"], 2)
+
+    def test_no_title_is_partial(self):
+        """有日期没标题也算详情不全（缺的是标题这一项）。"""
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-123", title="", details=DATE_ONLY))
+        status, missing, retry, _ = self._status()
+        self.assertEqual((status, missing, retry), ("partial", ["标题"], "detail"))
+
+    def test_both_title_and_date_missing_is_partial(self):
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-123", title="", details=[]))
+        status, missing, _, _ = self._status()
+        self.assertEqual(status, "partial")
+        self.assertEqual(missing, ["标题", "发行日期"])
+
+    def test_sparse_detail_page_is_ok(self):
+        """有标题 + 有发行日期就是拿到了详情：详情页没给片商/类型不算缺。"""
+        entries.import_links(["https://a.com/ABP-123"])
+        entries.ingest_fetched(_meta("https://a.com/ABP-123", details=DATE_ONLY))
+        status, missing, retry, _ = self._status()
+        self.assertEqual((status, missing, retry), ("ok", [], ""))
+        self.assertEqual(entries.get_entry("ABP-123")["status_level"], 0)
 
     def test_cover_missing_only(self):
         entries.import_links(["https://a.com/ABP-123"])
@@ -100,7 +113,6 @@ class TestStatusLevels(Base):
         imgcache.put(COVER, b"IMG", "image/png")
         status, missing, retry, cover_state = self._status()
         self.assertEqual((status, retry, cover_state, missing), ("ok", "", 2, []))
-        self.assertEqual(entries.get_entry("ABP-123")["status_level"], 0)
 
     def test_ok_while_cover_not_yet_cached(self):
         """有链接但图还没抓（懒加载）属于正常，不算异常。"""
@@ -112,16 +124,19 @@ class TestStatusLevels(Base):
 
 class TestStatusStats(Base):
     def test_counts(self):
-        entries.import_links(["https://a.com/ABP-1", "https://a.com/ABP-2", "https://a.com/ABP-3"])
-        # 缺详情
+        entries.import_links(["https://a.com/ABP-1", "https://a.com/ABP-2",
+                              "https://a.com/ABP-3", "https://a.com/ABP-4"])
+        # 详情不全：有标题没日期
         entries.ingest_fetched(_meta("https://a.com/ABP-1", details=[]))
-        # 缺图（详情齐）
+        # 缺图：标题和日期都有，只是没封面
         entries.ingest_fetched(_meta("https://a.com/ABP-2", thumbnail=""))
         # 完整
         entries.ingest_fetched(_meta("https://a.com/ABP-3"))
+        # ABP-4 从未抓过（空白），不该重复算进详情不全
         st = entries.queue_stats()
-        self.assertEqual(st["no_detail"], 1)
+        self.assertEqual(st["partial"], 1)
         self.assertEqual(st["cover_missing"], 1)
+        self.assertEqual(st["pending"], 1)
 
     def test_list_entries_carries_status(self):
         entries.import_links(["https://a.com/ABP-123"])

@@ -15,6 +15,10 @@
 
 * { box-sizing: border-box; }
 
+/* 作者样式里给了 display 的元素会盖掉 UA 的 [hidden]，这里补回来 */
+.import-form[hidden],
+#search-input[hidden] { display: none; }
+
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 
 html, body {
@@ -63,6 +67,8 @@ html, body {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
+  /* 导入栏在演员视图收起后，靠它把 ⚙ 顶到右侧 */
+  margin-left: auto;
   width: 38px;
   height: 38px;
   padding: 0;
@@ -104,6 +110,8 @@ input[type="text"], input[type="search"], input[type="search"], select {
 }
 input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 255, 0.2); }
 #search-input { width: 220px; }
+/* 演员视图没有导入栏，搜索框接过中间这段宽度 */
+body[data-view="actresses"] #search-input { flex: 1 1 auto; width: auto; }
 
 .btn {
   background: var(--panel-2);
@@ -131,7 +139,27 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
 
 /* ── 主区 ── */
 .main { padding: 20px; }
-.stats { color: var(--text-dim); font-size: 13px; margin-bottom: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* 视频 / 演员 两个平级主视图的切换条；统计信息靠右同排 */
+.view-switch { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.view-tab {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.view-tab:hover { color: var(--text); border-color: var(--accent); }
+.view-tab.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+  color: #fff;
+}
+.stats { margin-left: auto; color: var(--text-dim); font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .queue-text { color: var(--text-dim); font-size: 13px; }
 
 .grid {
@@ -231,12 +259,6 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
   overflow-wrap: anywhere;
 }
 
-.chip-link { text-decoration: none; color: var(--text-dim); }
-.chip-link:hover { color: var(--accent); border-color: var(--accent); }
-
-.field-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
-.field-link:hover { text-decoration: underline; }
-
 .raw-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
 .raw-link:hover { text-decoration: underline; }
 
@@ -294,7 +316,6 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
   margin-bottom: 12px;
   overflow-wrap: break-word;
 }
-.detail-props { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
 .field-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .field-label { font-size: 12px; color: var(--text-dim); }
 .field-value {
@@ -316,7 +337,7 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
 }
 .chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
 
-.status-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.status-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .status-tag {
   flex-shrink: 0;
   font-size: 11px;
@@ -329,9 +350,6 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
 }
 .status-tag.warn { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
 .status-tag.bad { color: #fca5a5; border-color: rgba(252, 165, 165, 0.4); }
-.status-hint { flex: 1 1 260px; min-width: 0; font-size: 12px; color: var(--text-dim); line-height: 1.55; }
-.status-missing { margin-top: 8px; }
-.status-section .btn { margin-top: 10px; }
 .link-list { display: flex; flex-direction: column; gap: 6px; }
 .link-row { display: flex; align-items: center; gap: 8px; }
 .link-list a { color: var(--accent); font-size: 13px; word-break: break-all; text-decoration: none; flex: 1; }
@@ -444,6 +462,69 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
 }
 .toast[hidden] { display: none; }
 
+/* ── 演员 ── */
+.actress-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+/* 加载中 / 空态提示独占一行 */
+.actress-grid > .hint,
+#actress-entries > .hint { grid-column: 1 / -1; }
+.actress-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.actress-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+  border-color: var(--accent);
+}
+/* 没有头像数据，用名字首字占位 */
+.actress-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(108, 140, 255, 0.15);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+.actress-card-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 名字单行截断：超长名字只留省略号，卡片高度保持一致（全名看 title） */
+.actress-card-name,
+.actress-card-count {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.actress-card-name { font-size: 14px; font-weight: 600; }
+.actress-card-count { font-size: 12px; color: var(--text-dim); }
+.actress-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.actress-head h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.actress-count { flex: none; font-size: 12px; color: var(--text-dim); }
+
 /* ══════════════════════ 移动端 / 窄屏 ══════════════════════ */
 @media (max-width: 720px) {
   /* 竖滑保留、横划不响应 —— 极窄屏上即使有元素超宽也不会左右滑动 */
@@ -519,7 +600,7 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
       calc(14px + env(safe-area-inset-bottom))
       calc(10px + env(safe-area-inset-left));
   }
-  .stats { margin-bottom: 10px; font-size: 12px; gap: 8px; overflow-wrap: anywhere; }
+  .stats { font-size: 12px; gap: 8px; overflow-wrap: anywhere; }
   .queue-text { font-size: 12px; }
 
   /* ── 卡片：横向列表行（封面左、信息右，垂直居中） ── */
@@ -585,7 +666,6 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
 
   .detail-head { flex-direction: column; gap: 12px; }
   .detail-cover { width: 100%; }
-  .detail-props { grid-template-columns: 1fr; gap: 8px; }
   .detail-title { font-size: 15px; }
   .detail-section { margin-top: 14px; }
   .detail-actions {
@@ -635,9 +715,20 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108, 140, 
   .db-form .btn { flex: 1 1 auto; min-height: 40px; }
   .db-list { max-height: 34vh; }
 
+  /* ── 视图切换 / 演员 ── */
+  .view-switch { gap: 6px; margin-bottom: 10px; }
+  .view-tab { padding: 5px 14px; font-size: 12px; }
+  .actress-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .actress-card { padding: 10px; gap: 8px; border-radius: 10px; }
+  .actress-card:hover { transform: none; box-shadow: none; border-color: var(--border); }
+  .actress-card:active { border-color: var(--accent); }
+  .actress-avatar { width: 32px; height: 32px; font-size: 13px; }
+  .actress-head { margin-bottom: 12px; gap: 8px; }
+  .actress-head h2 { font-size: 17px; }
+
   /* ── 长文本防护：任何元素都不许撑宽视口 ── */
   .card-code, .card-title, .detail-title, .detail-info h2 { overflow-wrap: anywhere; }
-  .detail-props, .field-row, .field-value,
+  .field-row, .field-value,
   .link-row, .chip-list, .tag-manage, .raw-table { min-width: 0; max-width: 100%; }
 
   /* ── toast ── */
